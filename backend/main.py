@@ -119,6 +119,22 @@ def _extract_uploaded_file(request_body: bytes, content_type: str) -> tuple[str,
     return None
 
 
+def _debug_relevant_lines(text: str) -> list[str]:
+    """Return compact fabric-related lines from scraper debug text."""
+    lines: list[str] = []
+
+    for raw_line in text.splitlines():
+        line = " ".join(raw_line.split())
+        if not line:
+            continue
+
+        lower_line = line.lower()
+        if "%" in line or any(keyword in lower_line for keyword in FABRIC_DEBUG_KEYWORDS):
+            lines.append(line)
+
+    return list(dict.fromkeys(lines))[:40]
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     """Return the service health status."""
@@ -144,6 +160,7 @@ async def debug_url_text(request: UrlRequest) -> object:
     """Return scraper text diagnostics for a product URL."""
     try:
         from anyio.to_thread import run_sync
+        from backend.ocr.fabric_parser import parse_fabric_composition
         from backend.url_parser.selenium_dynamic import inspect_selenium_page
 
         diagnostics = await run_sync(inspect_selenium_page, request.url)
@@ -162,6 +179,9 @@ async def debug_url_text(request: UrlRequest) -> object:
         matched_keywords = [
             keyword for keyword in FABRIC_DEBUG_KEYWORDS if keyword in lower_text
         ]
+        inditex_composition_text = str(diagnostics.get("inditex_composition_text", ""))
+        parser_input = inditex_composition_text or scraped_text
+        parsed_composition = parse_fabric_composition(parser_input)
 
         return {
             "success": True,
@@ -172,6 +192,9 @@ async def debug_url_text(request: UrlRequest) -> object:
             "text_length": len(scraped_text),
             "contains_fabric_keyword": bool(matched_keywords),
             "matched_keywords": matched_keywords,
+            "inditex_composition_text": inditex_composition_text,
+            "parsed_composition": parsed_composition,
+            "relevant_lines": _debug_relevant_lines(parser_input),
             "text_preview": scraped_text[:5000],
         }
     except Exception as exc:
