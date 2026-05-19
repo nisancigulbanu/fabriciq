@@ -9,7 +9,8 @@ from email.parser import BytesParser
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.url_parser.dynamic import (
@@ -20,7 +21,11 @@ from backend.url_parser.dynamic import (
 )
 
 
+BASE_DIR = Path(__file__).resolve().parent
+WEB_DIR = BASE_DIR / "web"
+
 app = FastAPI(title="FabricIQ Backend")
+app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
 
 
 class UrlRequest(BaseModel):
@@ -169,6 +174,12 @@ def _debug_relevant_lines(text: str) -> list[str]:
 async def health() -> dict[str, str]:
     """Return the service health status."""
     return {"status": "ok"}
+
+
+@app.get("/", response_class=FileResponse)
+async def web_app() -> FileResponse:
+    """Serve the local FabricIQ web interface."""
+    return FileResponse(WEB_DIR / "index.html")
 
 
 @app.get("/debug/runtime")

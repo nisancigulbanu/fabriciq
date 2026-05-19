@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FabricIQ</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">FabricIQ</p>
+            <h1>Kumas analiz paneli</h1>
+          </div>
+          <div class="status-pill" id="serviceStatus">Backend kontrol ediliyor</div>
+        </header>
+
+        <form class="analyze-form" id="analyzeForm">
+          <label for="productUrl">Urun linki</label>
+          <div class="input-row">
+            <input
+              id="productUrl"
+              name="url"
+              type="url"
+              placeholder="https://www.koton.com/..."
+              autocomplete="off"
+              required
+            />
+            <button type="submit" id="analyzeButton">Analiz Et</button>
+          </div>
+        </form>
+
+        <section class="result-grid" aria-live="polite">
+          <div class="score-panel">
+            <div class="score-ring" id="scoreRing" style="--score: 0">
+              <span id="scoreValue">0</span>
+            </div>
+            <div>
+              <p class="panel-label">Kalite skoru</p>
+              <h2 id="gradeValue">Bekleniyor</h2>
+              <p id="scoreNote">Bir urun linki girildiginde sonuc burada gorunur.</p>
+            </div>
+          </div>
+
+          <div class="summary-panel">
+            <div>
+              <p class="panel-label">Dogal oran</p>
+              <strong id="naturalRatio">0%</strong>
+            </div>
+            <div>
+              <p class="panel-label">Sentetik oran</p>
+              <strong id="syntheticRatio">0%</strong>
+            </div>
+            <div>
+              <p class="panel-label">Toplam</p>
+              <strong id="totalRatio">0%</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="composition-section">
+          <div class="section-heading">
+            <h2>Kumas bilesimi</h2>
+            <span id="validityBadge">Sonuc yok</span>
+          </div>
+          <div class="composition-list" id="compositionList">
+            <p class="empty-state">Analiz sonucu geldiginde materyal oranlari burada listelenir.</p>
+          </div>
+        </section>
+
+        <section class="message-panel" id="messagePanel" hidden></section>
+      </section>
+    </main>
+
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>

@@ -53,11 +53,21 @@ Open API docs:
 http://127.0.0.1:8000/docs
 ```
 
+Open the local web interface:
+
+```text
+http://127.0.0.1:8000/
+```
+
 ## API
 
 ### `GET /health`
 
 Returns service status.
+
+### `GET /`
+
+Serves the local URL analysis interface.
 
 ### `POST /analyze/label`
 
