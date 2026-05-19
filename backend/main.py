@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+import sys
 import tempfile
 from email import policy
 from email.parser import BytesParser
@@ -9,6 +11,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from backend.url_parser.dynamic import (
+    DynamicScraperBlockedError,
+    DynamicScraperNoTextError,
+    DynamicScraperTimeoutError,
+    DynamicScraperUnavailableError,
+)
+
 
 app = FastAPI(title="FabricIQ Backend")
 
@@ -17,6 +26,29 @@ class UrlRequest(BaseModel):
     """Request body for URL-based product analysis."""
 
     url: str
+
+
+FABRIC_DEBUG_KEYWORDS = (
+    "fabric",
+    "material",
+    "composition",
+    "cotton",
+    "polyester",
+    "viscose",
+    "elastane",
+    "kumaş",
+    "kumas",
+    "materyal",
+    "içerik",
+    "icerik",
+    "pamuk",
+    "viskon",
+    "naylon",
+    "polyamid",
+    "yün",
+    "wool",
+    "akrilik",
+)
 
 
 def _empty_ocr_result() -> dict[str, str | float]:
@@ -93,6 +125,71 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/debug/runtime")
+async def debug_runtime() -> dict[str, object]:
+    """Return runtime diagnostics for local development."""
+    return {
+        "python_executable": sys.executable,
+        "python_version": sys.version,
+        "main_file": __file__,
+        "cwd": str(Path.cwd()),
+        "playwright_available": importlib.util.find_spec("playwright") is not None,
+        "selenium_available": importlib.util.find_spec("selenium") is not None,
+        "webdriver_manager_available": importlib.util.find_spec("webdriver_manager") is not None,
+    }
+
+
+@app.post("/debug/url-text", response_model=None)
+async def debug_url_text(request: UrlRequest) -> object:
+    """Return scraper text diagnostics for a product URL."""
+    try:
+        from anyio.to_thread import run_sync
+        from backend.url_parser.selenium_dynamic import inspect_selenium_page
+
+        diagnostics = await run_sync(inspect_selenium_page, request.url)
+        if "error_type" in diagnostics:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "url": request.url,
+                    "error": diagnostics,
+                },
+            )
+
+        scraped_text = str(diagnostics.get("body_text", ""))
+        lower_text = scraped_text.lower()
+        matched_keywords = [
+            keyword for keyword in FABRIC_DEBUG_KEYWORDS if keyword in lower_text
+        ]
+
+        return {
+            "success": True,
+            "url": request.url,
+            "current_url": diagnostics.get("current_url"),
+            "title": diagnostics.get("title"),
+            "is_blocked": diagnostics.get("is_blocked"),
+            "text_length": len(scraped_text),
+            "contains_fabric_keyword": bool(matched_keywords),
+            "matched_keywords": matched_keywords,
+            "text_preview": scraped_text[:5000],
+        }
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "url": request.url,
+                "error": {
+                    "message": "URL text debug failed",
+                    "type": type(exc).__name__,
+                    "module": type(exc).__module__,
+                    "detail": repr(exc),
+                },
+            },
+        )
+
+
 @app.post("/analyze/label", response_model=None)
 async def analyze_label(request: Request) -> object:
     """Analyze an uploaded clothing label image end-to-end."""
@@ -147,11 +244,12 @@ async def analyze_label(request: Request) -> object:
 async def analyze_url(request: UrlRequest) -> object:
     """Analyze an e-commerce product URL end-to-end."""
     try:
+        from anyio.to_thread import run_sync
         from backend.ocr.fabric_parser import parse_fabric_composition
         from backend.scoring.quality_score import calculate_quality_score
         from backend.url_parser.extractor import extract_fabric_text
 
-        scraped_text = extract_fabric_text(request.url)
+        scraped_text = await run_sync(extract_fabric_text, request.url)
         fabric_result = parse_fabric_composition(scraped_text)
         score_result = calculate_quality_score(fabric_result["composition"])
 
@@ -162,15 +260,57 @@ async def analyze_url(request: UrlRequest) -> object:
             "score": score_result,
             "advice": None,
         }
-    except NotImplementedError:
+    except DynamicScraperBlockedError:
         return JSONResponse(
-            status_code=501,
+            status_code=403,
             content={
                 "success": False,
-                "error": "Dynamic pages not supported yet",
+                "error": "Page blocked browser-based scraping",
+            },
+        )
+    except DynamicScraperTimeoutError as exc:
+        return JSONResponse(
+            status_code=504,
+            content={
+                "success": False,
+                "error": "Dynamic page timed out",
+                "detail": str(exc),
+            },
+        )
+    except DynamicScraperNoTextError as exc:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "success": False,
+                "error": "No fabric text found on rendered page",
+                "detail": str(exc),
+            },
+        )
+    except DynamicScraperUnavailableError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": "Dynamic scraper runtime unavailable",
+                "detail": str(exc),
             },
         )
     except ValueError as exc:
         return _error_response(str(exc), status_code=400)
     except Exception as exc:
-        return _error_response(f"URL analysis failed: {exc}", status_code=500)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "ocr": _empty_ocr_result(),
+                "fabric": _empty_fabric_result(warning=f"URL analysis failed: {type(exc).__name__}"),
+                "score": _empty_score_result(),
+                "advice": None,
+                "error": {
+                    "message": "URL analysis failed",
+                    "type": type(exc).__name__,
+                    "module": type(exc).__module__,
+                    "detail": repr(exc),
+                },
+            },
+        )

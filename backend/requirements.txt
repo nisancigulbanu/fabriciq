@@ -8,3 +8,6 @@ pytest
 httpx
 requests
 beautifulsoup4
+playwright
+selenium
+webdriver-manager

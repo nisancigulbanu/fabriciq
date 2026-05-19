@@ -13,7 +13,7 @@ FabricIQ is a FastAPI backend that analyzes textile labels and e-commerce produc
 | Fabric composition parser | Done |
 | Quality scoring | Done |
 | Static URL analysis | Done |
-| Dynamic URL analysis | Planned |
+| Dynamic URL analysis | Done |
 | LLM advisor | Planned |
 
 ## Architecture
@@ -43,7 +43,8 @@ Run commands from the project root:
 ```powershell
 cd C:\Users\gulba\Desktop\fabriciq
 python -m pip install -r backend\requirements.txt
-uvicorn backend.main:app --reload
+python -m playwright install chromium
+python -m uvicorn backend.main:app --reload
 ```
 
 Open API docs:
@@ -106,12 +107,12 @@ Example response:
 }
 ```
 
-Dynamic pages are not supported yet. Current dynamic fallback response:
+Dynamic pages are handled with Selenium first and Playwright as a fallback. Some stores may still block browser-based scraping at the edge/CDN layer. Current blocked response:
 
 ```json
 {
   "success": false,
-  "error": "Dynamic pages not supported yet"
+  "error": "Page blocked browser-based scraping"
 }
 ```
 
@@ -121,7 +122,16 @@ Dynamic pages are not supported yet. Current dynamic fallback response:
 2. It checks for JSON-LD or product detail areas that include fabric-related terms.
 3. If static fabric data is available, `backend/url_parser/static.py` extracts plain text from JSON-LD and CSS-selected product detail blocks.
 4. `backend/url_parser/extractor.py` returns that plain text to the shared fabric parser.
-5. If the page appears dynamic, dynamic scraping is currently not implemented.
+5. If static text cannot be parsed into a composition, `backend/url_parser/selenium_dynamic.py` tries Selenium Chrome.
+6. If Selenium cannot extract fabric text, `backend/url_parser/dynamic.py` tries Playwright.
+7. If the site blocks browser-based scraping too, the API returns a clear blocked-page error.
+
+## Debug Endpoints
+
+These endpoints are for local development only:
+
+- `GET /debug/runtime`: shows the Python executable and browser-scraping dependency availability.
+- `POST /debug/url-text`: shows the raw text Selenium can see for a URL, plus fabric keyword matches.
 
 ## Testing
 
@@ -137,7 +147,7 @@ Current verified status:
 
 ## Next Work
 
-1. Add `backend/url_parser/dynamic.py` with Playwright.
-2. Route dynamic pages from `extractor.py` to the Playwright scraper.
-3. Add clearer URL error classes for timeout, blocked pages, and no fabric text.
-4. Add site-specific selector tuning for Zara, Trendyol, H&M, and similar dynamic stores.
+1. Add richer dynamic-page extraction for product detail accordions and lazy content.
+2. Add site-specific selector tuning for Zara, Trendyol, H&M, and similar dynamic stores.
+3. Add integration tests for Playwright/Selenium fallback where browser runtime is available.
+4. Add optional browser profile support for sites that require a real logged-in/localized session.

@@ -9,7 +9,11 @@ from bs4 import BeautifulSoup
 
 
 REQUEST_TIMEOUT_SECONDS = 12
-USER_AGENT = "FabricIQ/0.1 (+https://example.com/fabriciq)"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
 FABRIC_KEYWORDS = (
     "fabric",
     "material",
@@ -27,6 +31,19 @@ FABRIC_KEYWORDS = (
     "polyester",
     "viskon",
     "elastan",
+    "acrylic",
+    "akrilik",
+    "polyamide",
+    "polyamid",
+    "nylon",
+    "naylon",
+    "wool",
+    "yün",
+    "yun",
+    "linen",
+    "keten",
+    "silk",
+    "ipek",
 )
 PRODUCT_DETAIL_SELECTORS = (
     "[class*='product'][class*='detail']",

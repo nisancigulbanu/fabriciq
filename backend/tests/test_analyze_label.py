@@ -8,9 +8,9 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from main import app
+from backend.main import app
 
 
 @pytest.fixture
@@ -198,17 +198,15 @@ def test_analyze_url_returns_success_for_static_page(client: TestClient, monkeyp
     assert captured["text_to_parse"] == "60% Cotton 40% Polyester"
 
 
-def test_analyze_url_returns_dynamic_not_supported(
+def test_analyze_url_returns_structured_error_for_unexpected_dynamic_failure(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Return a clear error while dynamic URL parsing is not implemented."""
+    """Return a structured error when URL extraction fails unexpectedly."""
     _install_fake_url_pipeline(monkeypatch, dynamic=True)
 
     response = client.post("/analyze/url", json={"url": "https://example.com/dynamic-product"})
 
-    assert response.status_code == 501
-    assert response.json() == {
-        "success": False,
-        "error": "Dynamic pages not supported yet",
-    }
+    assert response.status_code == 500
+    assert response.json()["success"] is False
+    assert response.json()["error"]["message"] == "URL analysis failed"
