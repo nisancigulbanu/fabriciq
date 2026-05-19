@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import tempfile
 from email import policy
@@ -50,6 +51,8 @@ FABRIC_DEBUG_KEYWORDS = (
     "akrilik",
 )
 
+DEVELOPMENT_ENVIRONMENTS = {"development", "dev", "local"}
+
 
 def _empty_ocr_result() -> dict[str, str | float]:
     """Return an empty OCR payload."""
@@ -80,7 +83,18 @@ def _empty_score_result() -> dict[str, int | str]:
     }
 
 
-def _error_response(message: str, status_code: int) -> JSONResponse:
+def _is_debug_enabled() -> bool:
+    """Return true when development-only endpoints should be available."""
+    return os.getenv("ENVIRONMENT", "development").strip().lower() in DEVELOPMENT_ENVIRONMENTS
+
+
+def _error_response(
+    message: str,
+    status_code: int,
+    *,
+    code: str,
+    detail: str | None = None,
+) -> JSONResponse:
     """Build a structured error response."""
     return JSONResponse(
         status_code=status_code,
@@ -91,7 +105,23 @@ def _error_response(message: str, status_code: int) -> JSONResponse:
             "score": _empty_score_result(),
             "advice": None,
             "error": {
+                "code": code,
                 "message": message,
+                "detail": detail,
+            },
+        },
+    )
+
+
+def _debug_disabled_response() -> JSONResponse:
+    """Return a not-found response when debug endpoints are disabled."""
+    return JSONResponse(
+        status_code=404,
+        content={
+            "success": False,
+            "error": {
+                "code": "debug_disabled",
+                "message": "Debug endpoints are disabled.",
             },
         },
     )
@@ -142,8 +172,11 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/debug/runtime")
-async def debug_runtime() -> dict[str, object]:
+async def debug_runtime() -> object:
     """Return runtime diagnostics for local development."""
+    if not _is_debug_enabled():
+        return _debug_disabled_response()
+
     return {
         "python_executable": sys.executable,
         "python_version": sys.version,
@@ -158,6 +191,9 @@ async def debug_runtime() -> dict[str, object]:
 @app.post("/debug/url-text", response_model=None)
 async def debug_url_text(request: UrlRequest) -> object:
     """Return scraper text diagnostics for a product URL."""
+    if not _is_debug_enabled():
+        return _debug_disabled_response()
+
     try:
         from anyio.to_thread import run_sync
         from backend.ocr.fabric_parser import parse_fabric_composition
@@ -204,6 +240,7 @@ async def debug_url_text(request: UrlRequest) -> object:
                 "success": False,
                 "url": request.url,
                 "error": {
+                    "code": "debug_failed",
                     "message": "URL text debug failed",
                     "type": type(exc).__name__,
                     "module": type(exc).__module__,
@@ -221,7 +258,7 @@ async def analyze_label(request: Request) -> object:
     uploaded_file = _extract_uploaded_file(request_body, content_type)
 
     if uploaded_file is None:
-        return _error_response("No file was provided.", status_code=400)
+        return _error_response("No file was provided.", status_code=400, code="missing_file")
 
     filename, file_bytes = uploaded_file
     suffix = Path(filename).suffix or ".img"
@@ -251,11 +288,16 @@ async def analyze_label(request: Request) -> object:
             "advice": None,
         }
     except FileNotFoundError as exc:
-        return _error_response(str(exc), status_code=404)
+        return _error_response(str(exc), status_code=404, code="file_not_found", detail=str(exc))
     except ValueError as exc:
-        return _error_response(str(exc), status_code=400)
+        return _error_response(str(exc), status_code=400, code="bad_request", detail=str(exc))
     except Exception as exc:
-        return _error_response(f"Label analysis failed: {exc}", status_code=500)
+        return _error_response(
+            "Label analysis failed",
+            status_code=500,
+            code="label_analysis_failed",
+            detail=f"{type(exc).__name__}: {exc}",
+        )
     finally:
         if temp_path:
             temp_file_path = Path(temp_path)
@@ -288,7 +330,11 @@ async def analyze_url(request: UrlRequest) -> object:
             status_code=403,
             content={
                 "success": False,
-                "error": "Page blocked browser-based scraping",
+                "error": {
+                    "code": "site_blocked",
+                    "message": "Page blocked browser-based scraping",
+                    "source": "browser",
+                },
             },
         )
     except DynamicScraperTimeoutError as exc:
@@ -296,8 +342,11 @@ async def analyze_url(request: UrlRequest) -> object:
             status_code=504,
             content={
                 "success": False,
-                "error": "Dynamic page timed out",
-                "detail": str(exc),
+                "error": {
+                    "code": "dynamic_timeout",
+                    "message": "Dynamic page timed out",
+                    "detail": str(exc),
+                },
             },
         )
     except DynamicScraperNoTextError as exc:
@@ -305,8 +354,11 @@ async def analyze_url(request: UrlRequest) -> object:
             status_code=422,
             content={
                 "success": False,
-                "error": "No fabric text found on rendered page",
-                "detail": str(exc),
+                "error": {
+                    "code": "no_fabric_text",
+                    "message": "No fabric text found on rendered page",
+                    "detail": str(exc),
+                },
             },
         )
     except DynamicScraperUnavailableError as exc:
@@ -314,22 +366,26 @@ async def analyze_url(request: UrlRequest) -> object:
             status_code=503,
             content={
                 "success": False,
-                "error": "Dynamic scraper runtime unavailable",
-                "detail": str(exc),
+                "error": {
+                    "code": "dynamic_runtime_unavailable",
+                    "message": "Dynamic scraper runtime unavailable",
+                    "detail": str(exc),
+                },
             },
         )
     except ValueError as exc:
-        return _error_response(str(exc), status_code=400)
+        return _error_response(str(exc), status_code=400, code="bad_request", detail=str(exc))
     except Exception as exc:
         return JSONResponse(
             status_code=500,
             content={
                 "success": False,
                 "ocr": _empty_ocr_result(),
-                "fabric": _empty_fabric_result(warning=f"URL analysis failed: {type(exc).__name__}"),
+                "fabric": _empty_fabric_result(warning="URL analysis failed"),
                 "score": _empty_score_result(),
                 "advice": None,
                 "error": {
+                    "code": "url_analysis_failed",
                     "message": "URL analysis failed",
                     "type": type(exc).__name__,
                     "module": type(exc).__module__,
