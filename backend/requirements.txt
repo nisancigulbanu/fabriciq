@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+numpy
+opencv-python-headless
+easyocr
+python-multipart
+pytest
+httpx
+requests
+beautifulsoup4
