@@ -25,7 +25,7 @@ FABRIC_ALIASES: dict[str, tuple[str, ...]] = {
     "yun": ("yun", "yün", "wool", "wol"),
     "ipek": ("ipek", "silk"),
     "keten": ("keten", "linen", "lin"),
-    "akrilik": ("akrilik", "acrylic", "ac"),
+    "akrilik": ("akrilik", "acrylic", "polyacrylic", "poly acrylic", "poliakrilik", "ac"),
     "elastan": ("elastan", "elastane", "lycra", "spandex", "ea"),
 }
 
