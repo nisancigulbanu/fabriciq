@@ -30,7 +30,10 @@ def _install_fake_pipeline(
     *,
     raw_text: str,
     confident_text: str,
+    avg_confidence: float = 88.5,
     composition: list[dict[str, int | str]] | None = None,
+    is_valid: bool = True,
+    warning: str | None = None,
 ) -> dict[str, str]:
     """Install fake OCR and scoring modules for endpoint tests."""
     captured: dict[str, str] = {}
@@ -42,7 +45,7 @@ def _install_fake_pipeline(
     fake_engine.extract_text_from_image = lambda processed_image: {
         "raw_text": raw_text,
         "confident_text": confident_text,
-        "avg_confidence": 88.5,
+        "avg_confidence": avg_confidence,
     }
 
     fake_parser = types.ModuleType("ocr.fabric_parser")
@@ -53,8 +56,8 @@ def _install_fake_pipeline(
         return {
             "composition": parsed_composition,
             "total_ratio": sum(int(item["ratio"]) for item in parsed_composition),
-            "is_valid": True,
-            "warning": None,
+            "is_valid": is_valid,
+            "warning": warning,
         }
 
     fake_parser.parse_fabric_composition = parse_fabric_composition
@@ -182,6 +185,32 @@ def test_analyze_label_uses_raw_text_when_confident_text_is_empty(
 
     assert response.status_code == 200
     assert captured["text_to_parse"] == "60% Cotton 40% PES"
+
+
+def test_analyze_label_returns_capture_advice_when_ocr_is_weak(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return capture guidance when OCR confidence is low or composition is invalid."""
+    _install_fake_pipeline(
+        monkeypatch,
+        raw_text="blurred text",
+        confident_text="",
+        avg_confidence=31.0,
+        composition=[],
+        is_valid=False,
+        warning="Fabric composition could not be extracted from the provided text.",
+    )
+
+    response = client.post(
+        "/analyze/label",
+        files={"file": ("label.jpg", b"fake-image-bytes", "image/jpeg")},
+    )
+
+    response_json = response.json()
+    assert response.status_code == 200
+    assert response_json["advice"]
+    assert "duz aciyla" in response_json["advice"]
 
 
 def test_analyze_url_returns_success_for_static_page(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

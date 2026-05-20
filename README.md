@@ -78,6 +78,8 @@ curl -X POST "http://127.0.0.1:8000/analyze/label" `
   -F "file=@etiket_foto.jpg"
 ```
 
+If OCR confidence is low or no valid fabric composition can be parsed, the response includes an `advice` message asking the user to retake the label photo with better lighting, a straight angle, and sharper text.
+
 ### `POST /analyze/url`
 
 Request body:

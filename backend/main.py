@@ -57,6 +57,11 @@ FABRIC_DEBUG_KEYWORDS = (
 )
 
 DEVELOPMENT_ENVIRONMENTS = {"development", "dev", "local"}
+LOW_OCR_CONFIDENCE_THRESHOLD = 55.0
+LABEL_CAPTURE_ADVICE = (
+    "Etiketi daha aydinlik, parlama yapmayacak sekilde ve duz aciyla cekin. "
+    "Yazi net gorunmeli, etiket kirisik olmamali ve kadraji mumkun oldugunca doldurmali."
+)
 
 
 def _empty_ocr_result() -> dict[str, str | float]:
@@ -168,6 +173,22 @@ def _debug_relevant_lines(text: str) -> list[str]:
             lines.append(line)
 
     return list(dict.fromkeys(lines))[:40]
+
+
+def _build_label_advice(
+    ocr_result: dict[str, object],
+    fabric_result: dict[str, object],
+) -> str | None:
+    """Return capture guidance when OCR or parsing quality is too low."""
+    confidence = float(ocr_result.get("avg_confidence") or 0.0)
+    has_text = bool(str(ocr_result.get("raw_text") or ocr_result.get("confident_text") or "").strip())
+    has_composition = bool(fabric_result.get("composition"))
+    is_valid = bool(fabric_result.get("is_valid"))
+
+    if not has_text or confidence < LOW_OCR_CONFIDENCE_THRESHOLD or not has_composition or not is_valid:
+        return LABEL_CAPTURE_ADVICE
+
+    return None
 
 
 @app.get("/health")
@@ -290,13 +311,14 @@ async def analyze_label(request: Request) -> object:
         text_to_parse = ocr_result["raw_text"] or ocr_result["confident_text"]
         fabric_result = parse_fabric_composition(str(text_to_parse))
         score_result = calculate_quality_score(fabric_result["composition"])
+        advice = _build_label_advice(ocr_result, fabric_result)
 
         return {
             "success": True,
             "ocr": ocr_result,
             "fabric": fabric_result,
             "score": score_result,
-            "advice": None,
+            "advice": advice,
         }
     except FileNotFoundError as exc:
         return _error_response(str(exc), status_code=404, code="file_not_found", detail=str(exc))

@@ -99,8 +99,10 @@ function renderResult(data) {
 
   renderComposition(fabric.composition || []);
 
-  if (!fabric.is_valid && fabric.warning) {
-    showMessage(fabric.warning, "warning");
+  const guidance = data.advice ? `${fabric.warning || ""}${fabric.warning ? " " : ""}${data.advice}` : fabric.warning;
+
+  if ((!fabric.is_valid || data.advice) && guidance) {
+    showMessage(guidance, "warning");
   } else {
     clearMessage();
   }
