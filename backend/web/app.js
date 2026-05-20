@@ -99,7 +99,7 @@ function renderResult(data) {
 
   renderComposition(fabric.composition || []);
 
-  const guidance = data.advice ? `${fabric.warning || ""}${fabric.warning ? " " : ""}${data.advice}` : fabric.warning;
+  const guidance = data.advice || fabric.warning;
 
   if ((!fabric.is_valid || data.advice) && guidance) {
     showMessage(guidance, "warning");

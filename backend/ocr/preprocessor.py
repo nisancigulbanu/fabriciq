@@ -41,8 +41,31 @@ def _rotate_image(image: np.ndarray, angle: float) -> np.ndarray:
     )
 
 
-def preprocess_image(image_path: str) -> np.ndarray:
-    """Load an image from disk and prepare it for OCR."""
+def _resize_for_ocr(grayscale: np.ndarray) -> np.ndarray:
+    """Scale label text up before OCR."""
+    return cv2.resize(
+        grayscale,
+        None,
+        fx=2.0,
+        fy=2.0,
+        interpolation=cv2.INTER_CUBIC,
+    )
+
+
+def _deskew(binary_image: np.ndarray) -> np.ndarray:
+    """Deskew a binary image using its foreground text angle."""
+    angle = _compute_skew_angle(binary_image)
+    return _rotate_image(binary_image, angle)
+
+
+def _sharpen(image: np.ndarray) -> np.ndarray:
+    """Apply a light sharpening kernel for faint label text."""
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+    return cv2.filter2D(image, -1, kernel)
+
+
+def _load_grayscale(image_path: str) -> np.ndarray:
+    """Load an image from disk as grayscale."""
     path = Path(image_path)
     if not path.is_file():
         raise FileNotFoundError(f"Image file not found: {image_path}")
@@ -51,20 +74,20 @@ def preprocess_image(image_path: str) -> np.ndarray:
     if image is None:
         raise ValueError(f"Failed to read image file: {image_path}")
 
-    grayscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    enlarged = cv2.resize(
-        grayscale,
-        None,
-        fx=2.0,
-        fy=2.0,
-        interpolation=cv2.INTER_CUBIC,
-    )
+    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+
+def preprocess_image_variants(image_path: str) -> list[tuple[str, np.ndarray]]:
+    """Return multiple OCR-ready variants for difficult label photos."""
+    grayscale = _load_grayscale(image_path)
+    enlarged = _resize_for_ocr(grayscale)
     denoised = cv2.fastNlMeansDenoising(enlarged, None, h=10, templateWindowSize=7, searchWindowSize=21)
 
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(denoised)
+    sharpened = _sharpen(enhanced)
 
-    thresholded = cv2.adaptiveThreshold(
+    adaptive_gaussian = cv2.adaptiveThreshold(
         enhanced,
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -72,6 +95,26 @@ def preprocess_image(image_path: str) -> np.ndarray:
         31,
         15,
     )
+    adaptive_mean = cv2.adaptiveThreshold(
+        enhanced,
+        255,
+        cv2.ADAPTIVE_THRESH_MEAN_C,
+        cv2.THRESH_BINARY,
+        35,
+        11,
+    )
+    _, otsu = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, sharpened_otsu = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    angle = _compute_skew_angle(thresholded)
-    return _rotate_image(thresholded, angle)
+    return [
+        ("adaptive_gaussian", _deskew(adaptive_gaussian)),
+        ("adaptive_mean", _deskew(adaptive_mean)),
+        ("otsu", _deskew(otsu)),
+        ("sharpened_otsu", _deskew(sharpened_otsu)),
+        ("enhanced_grayscale", enhanced),
+    ]
+
+
+def preprocess_image(image_path: str) -> np.ndarray:
+    """Load an image from disk and prepare it for OCR."""
+    return preprocess_image_variants(image_path)[0][1]

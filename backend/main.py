@@ -191,6 +191,26 @@ def _build_label_advice(
     return None
 
 
+def _label_candidate_rank(
+    ocr_result: dict[str, object],
+    fabric_result: dict[str, object],
+) -> tuple[int, int, float, float, int]:
+    """Rank OCR candidates by parse quality first, OCR confidence second."""
+    composition = fabric_result.get("composition") or []
+    total_ratio = float(fabric_result.get("total_ratio") or 0)
+    confidence = float(ocr_result.get("avg_confidence") or 0.0)
+    raw_text = str(ocr_result.get("raw_text") or "")
+    total_closeness = max(0.0, 100.0 - abs(100.0 - total_ratio))
+
+    return (
+        int(bool(fabric_result.get("is_valid"))),
+        len(composition) if isinstance(composition, list) else 0,
+        total_closeness,
+        confidence,
+        len(raw_text),
+    )
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     """Return the service health status."""
@@ -299,18 +319,42 @@ async def analyze_label(request: Request) -> object:
     try:
         from backend.ocr.engine import extract_text_from_image
         from backend.ocr.fabric_parser import parse_fabric_composition
-        from backend.ocr.preprocessor import preprocess_image
+        from backend.ocr.preprocessor import preprocess_image_variants
         from backend.scoring.quality_score import calculate_quality_score
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
             temp_file.write(file_bytes)
             temp_path = temp_file.name
 
-        processed_image = preprocess_image(temp_path)
-        ocr_result = extract_text_from_image(processed_image)
-        text_to_parse = ocr_result["raw_text"] or ocr_result["confident_text"]
-        fabric_result = parse_fabric_composition(str(text_to_parse))
-        score_result = calculate_quality_score(fabric_result["composition"])
+        best_result: tuple[
+            tuple[int, int, float, float, int],
+            dict[str, str | float],
+            dict[str, object],
+            dict[str, int | str],
+        ] | None = None
+
+        for _, processed_image in preprocess_image_variants(temp_path):
+            ocr_result = extract_text_from_image(processed_image)
+            text_to_parse = ocr_result["raw_text"] or ocr_result["confident_text"]
+            fabric_result = parse_fabric_composition(str(text_to_parse))
+            score_result = calculate_quality_score(fabric_result["composition"])
+            candidate = (
+                _label_candidate_rank(ocr_result, fabric_result),
+                ocr_result,
+                fabric_result,
+                score_result,
+            )
+
+            if best_result is None or candidate[0] > best_result[0]:
+                best_result = candidate
+
+            if fabric_result.get("is_valid"):
+                break
+
+        if best_result is None:
+            raise ValueError("No OCR preprocessing variants were generated.")
+
+        _, ocr_result, fabric_result, score_result = best_result
         advice = _build_label_advice(ocr_result, fabric_result)
 
         return {

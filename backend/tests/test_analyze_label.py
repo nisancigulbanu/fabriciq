@@ -40,6 +40,7 @@ def _install_fake_pipeline(
 
     fake_preprocessor = types.ModuleType("ocr.preprocessor")
     fake_preprocessor.preprocess_image = lambda image_path: "processed-image"
+    fake_preprocessor.preprocess_image_variants = lambda image_path: [("default", "processed-image")]
 
     fake_engine = types.ModuleType("ocr.engine")
     fake_engine.extract_text_from_image = lambda processed_image: {
@@ -58,6 +59,72 @@ def _install_fake_pipeline(
             "total_ratio": sum(int(item["ratio"]) for item in parsed_composition),
             "is_valid": is_valid,
             "warning": warning,
+        }
+
+    fake_parser.parse_fabric_composition = parse_fabric_composition
+
+    fake_scorer = types.ModuleType("scoring.quality_score")
+    fake_scorer.calculate_quality_score = lambda parsed_composition: {
+        "quality_score": 53,
+        "grade": "F",
+        "natural_ratio": 60,
+        "synthetic_ratio": 40,
+    }
+
+    monkeypatch.setitem(sys.modules, "backend.ocr.preprocessor", fake_preprocessor)
+    monkeypatch.setitem(sys.modules, "backend.ocr.engine", fake_engine)
+    monkeypatch.setitem(sys.modules, "backend.ocr.fabric_parser", fake_parser)
+    monkeypatch.setitem(sys.modules, "backend.scoring.quality_score", fake_scorer)
+
+    return captured
+
+
+def _install_fake_multi_variant_pipeline(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """Install a fake OCR pipeline with one bad variant and one parseable variant."""
+    captured: dict[str, object] = {"ocr_calls": []}
+
+    fake_preprocessor = types.ModuleType("ocr.preprocessor")
+    fake_preprocessor.preprocess_image_variants = lambda image_path: [
+        ("bad", "bad-image"),
+        ("good", "good-image"),
+    ]
+
+    fake_engine = types.ModuleType("ocr.engine")
+
+    def extract_text_from_image(processed_image: str) -> dict[str, str | float]:
+        captured["ocr_calls"].append(processed_image)  # type: ignore[union-attr]
+        if processed_image == "bad-image":
+            return {
+                "raw_text": "blurred text",
+                "confident_text": "",
+                "avg_confidence": 22.0,
+            }
+
+        return {
+            "raw_text": "60% Pamuk 40% Polyester",
+            "confident_text": "60% Pamuk 40% Polyester",
+            "avg_confidence": 91.0,
+        }
+
+    fake_engine.extract_text_from_image = extract_text_from_image
+
+    fake_parser = types.ModuleType("ocr.fabric_parser")
+
+    def parse_fabric_composition(text: str) -> dict[str, object]:
+        captured["selected_text"] = text
+        if "Pamuk" not in text:
+            return {
+                "composition": [],
+                "total_ratio": 0,
+                "is_valid": False,
+                "warning": "Fabric composition could not be extracted from the provided text.",
+            }
+
+        return {
+            "composition": [{"fabric": "pamuk", "ratio": 60}, {"fabric": "polyester", "ratio": 40}],
+            "total_ratio": 100,
+            "is_valid": True,
+            "warning": None,
         }
 
     fake_parser.parse_fabric_composition = parse_fabric_composition
@@ -211,6 +278,25 @@ def test_analyze_label_returns_capture_advice_when_ocr_is_weak(
     assert response.status_code == 200
     assert response_json["advice"]
     assert "duz aciyla" in response_json["advice"]
+
+
+def test_analyze_label_uses_best_preprocessing_variant(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Try multiple preprocessing variants and return the parseable OCR result."""
+    captured = _install_fake_multi_variant_pipeline(monkeypatch)
+
+    response = client.post(
+        "/analyze/label",
+        files={"file": ("label.jpg", b"fake-image-bytes", "image/jpeg")},
+    )
+
+    response_json = response.json()
+    assert response.status_code == 200
+    assert response_json["fabric"]["is_valid"] is True
+    assert response_json["advice"] is None
+    assert captured["ocr_calls"] == ["bad-image", "good-image"]
 
 
 def test_analyze_url_returns_success_for_static_page(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
