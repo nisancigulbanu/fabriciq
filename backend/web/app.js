@@ -89,7 +89,7 @@ function renderResult(data) {
     ? confidence > 0
       ? `Kumas oranlari OCR ile okundu. OCR guveni: ${Math.round(confidence)}%.`
       : "Kumas oranlari dengeli okundu ve kalite skoru hesaplandi."
-    : fabric.warning || "Kumas oranlari dogrulanamadi.";
+    : data.advice || "Kumas oranlari dogrulanamadi.";
 
   naturalRatio.textContent = `${score.natural_ratio || 0}%`;
   syntheticRatio.textContent = `${score.synthetic_ratio || 0}%`;

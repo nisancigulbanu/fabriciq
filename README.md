@@ -144,6 +144,7 @@ These endpoints are for local development only:
 
 - `GET /debug/runtime`: shows the Python executable and browser-scraping dependency availability.
 - `POST /debug/url-text`: shows the raw text Selenium can see for a URL, plus fabric keyword matches.
+- `POST /debug/label-ocr`: shows OCR text, confidence, and parsed fabric result for each label preprocessing variant.
 
 ## Testing
 

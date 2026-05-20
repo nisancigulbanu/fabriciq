@@ -211,6 +211,16 @@ def _label_candidate_rank(
     )
 
 
+def _save_uploaded_file(uploaded_file: tuple[str, bytes]) -> tuple[str, str]:
+    """Persist uploaded bytes temporarily and return suffix plus path."""
+    filename, file_bytes = uploaded_file
+    suffix = Path(filename).suffix or ".img"
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        temp_file.write(file_bytes)
+        return suffix, temp_file.name
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     """Return the service health status."""
@@ -302,6 +312,77 @@ async def debug_url_text(request: UrlRequest) -> object:
         )
 
 
+@app.post("/debug/label-ocr", response_model=None)
+async def debug_label_ocr(request: Request) -> object:
+    """Return OCR diagnostics for each label preprocessing variant."""
+    if not _is_debug_enabled():
+        return _debug_disabled_response()
+
+    content_type = request.headers.get("content-type", "")
+    request_body = await request.body()
+    uploaded_file = _extract_uploaded_file(request_body, content_type)
+
+    if uploaded_file is None:
+        return _error_response("No file was provided.", status_code=400, code="missing_file")
+
+    temp_path: str | None = None
+
+    try:
+        from anyio.to_thread import run_sync
+        from backend.ocr.engine import extract_text_from_image
+        from backend.ocr.fabric_parser import parse_fabric_composition
+        from backend.ocr.preprocessor import preprocess_image_variants
+
+        _, temp_path = _save_uploaded_file(uploaded_file)
+
+        def inspect_variants() -> list[dict[str, object]]:
+            diagnostics: list[dict[str, object]] = []
+
+            for variant_name, processed_image in preprocess_image_variants(temp_path):
+                ocr_result = extract_text_from_image(processed_image)
+                parser_input = ocr_result["raw_text"] or ocr_result["confident_text"]
+                fabric_result = parse_fabric_composition(str(parser_input))
+                diagnostics.append(
+                    {
+                        "variant": variant_name,
+                        "rank": _label_candidate_rank(ocr_result, fabric_result),
+                        "ocr": ocr_result,
+                        "fabric": fabric_result,
+                    }
+                )
+
+            return diagnostics
+
+        variants = await run_sync(inspect_variants)
+        sorted_variants = sorted(variants, key=lambda item: tuple(item["rank"]), reverse=True)
+
+        return {
+            "success": True,
+            "variant_count": len(variants),
+            "best_variant": sorted_variants[0] if sorted_variants else None,
+            "variants": variants,
+        }
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": {
+                    "code": "label_ocr_debug_failed",
+                    "message": "Label OCR debug failed",
+                    "type": type(exc).__name__,
+                    "module": type(exc).__module__,
+                    "detail": repr(exc),
+                },
+            },
+        )
+    finally:
+        if temp_path:
+            temp_file_path = Path(temp_path)
+            if temp_file_path.exists():
+                temp_file_path.unlink()
+
+
 @app.post("/analyze/label", response_model=None)
 async def analyze_label(request: Request) -> object:
     """Analyze an uploaded clothing label image end-to-end."""
@@ -312,8 +393,6 @@ async def analyze_label(request: Request) -> object:
     if uploaded_file is None:
         return _error_response("No file was provided.", status_code=400, code="missing_file")
 
-    filename, file_bytes = uploaded_file
-    suffix = Path(filename).suffix or ".img"
     temp_path: str | None = None
 
     try:
@@ -322,9 +401,7 @@ async def analyze_label(request: Request) -> object:
         from backend.ocr.preprocessor import preprocess_image_variants
         from backend.scoring.quality_score import calculate_quality_score
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            temp_file.write(file_bytes)
-            temp_path = temp_file.name
+        _, temp_path = _save_uploaded_file(uploaded_file)
 
         best_result: tuple[
             tuple[int, int, float, float, int],
