@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from itertools import combinations
 from typing import Any
 
 
@@ -85,6 +86,33 @@ def _match_group(match: re.Match[str], name: str) -> str | None:
         return None
 
 
+def _select_best_composition_subset(composition: list[dict[str, int | str]]) -> list[dict[str, int | str]]:
+    """Choose the most plausible 95-105 total subset from noisy OCR/page matches."""
+    if not composition:
+        return []
+
+    all_total = sum(int(item["ratio"]) for item in composition)
+    if 95 <= all_total <= 105:
+        return composition
+
+    if len(composition) > 16:
+        return composition
+
+    valid_subsets: list[tuple[int, int, int, tuple[dict[str, int | str], ...]]] = []
+
+    for subset_size in range(1, len(composition) + 1):
+        for subset in combinations(composition, subset_size):
+            total = sum(int(item["ratio"]) for item in subset)
+            if 95 <= total <= 105:
+                valid_subsets.append((abs(100 - total), -subset_size, composition.index(subset[0]), subset))
+
+    if not valid_subsets:
+        return composition
+
+    _, _, _, best_subset = min(valid_subsets, key=lambda item: item[:3])
+    return list(best_subset)
+
+
 def parse_fabric_composition(text: str) -> dict[str, Any]:
     """Extract normalized fabric composition entries from plain text."""
     text = _normalize_ocr_noise(_normalize_turkish(text))
@@ -124,6 +152,7 @@ def parse_fabric_composition(text: str) -> dict[str, Any]:
             }
         )
 
+    composition = _select_best_composition_subset(composition)
     total_ratio = sum(int(item["ratio"]) for item in composition)
     is_valid = 95 <= total_ratio <= 105
     warning = None if is_valid else _build_warning(total_ratio=total_ratio, found_match=bool(composition))

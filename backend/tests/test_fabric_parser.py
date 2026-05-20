@@ -40,3 +40,27 @@ def test_parse_noisy_label_poliesterra_suffix() -> None:
     assert result["composition"] == [{"fabric": "polyester", "ratio": 100}]
     assert result["total_ratio"] == 100
     assert result["is_valid"] is True
+
+
+def test_parser_selects_valid_product_subset_from_page_noise() -> None:
+    """Ignore extra page text when one contiguous product composition totals 100."""
+    result = parse_fabric_composition(
+        "Materyal %17 naylon %74 akrilik %9 polyester Populer aramalar %100 pamuk %10 pamuk"
+    )
+
+    assert result["composition"] == [
+        {"fabric": "naylon", "ratio": 17},
+        {"fabric": "akrilik", "ratio": 74},
+        {"fabric": "polyester", "ratio": 9},
+    ]
+    assert result["total_ratio"] == 100
+    assert result["is_valid"] is True
+
+
+def test_parser_ignores_spurious_label_ratio_when_exact_total_exists() -> None:
+    """Prefer the valid 100% material over an OCR side-reading such as 24% polyester."""
+    result = parse_fabric_composition("24% polyester EXTERIOR OUTER 1009 poliaster")
+
+    assert result["composition"] == [{"fabric": "polyester", "ratio": 100}]
+    assert result["total_ratio"] == 100
+    assert result["is_valid"] is True
