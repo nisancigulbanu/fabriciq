@@ -77,9 +77,18 @@ def _load_grayscale(image_path: str) -> np.ndarray:
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
 
-def preprocess_image_variants(image_path: str) -> list[tuple[str, np.ndarray]]:
-    """Return multiple OCR-ready variants for difficult label photos."""
-    grayscale = _load_grayscale(image_path)
+def _orientation_variants(grayscale: np.ndarray) -> list[tuple[str, np.ndarray]]:
+    """Return likely reading orientations for label photos."""
+    return [
+        ("original", grayscale),
+        ("rot90_clockwise", cv2.rotate(grayscale, cv2.ROTATE_90_CLOCKWISE)),
+        ("rot90_counterclockwise", cv2.rotate(grayscale, cv2.ROTATE_90_COUNTERCLOCKWISE)),
+        ("rot180", cv2.rotate(grayscale, cv2.ROTATE_180)),
+    ]
+
+
+def _preprocess_oriented_image(grayscale: np.ndarray) -> list[tuple[str, np.ndarray]]:
+    """Return OCR-ready variants for one image orientation."""
     enlarged = _resize_for_ocr(grayscale)
     denoised = cv2.fastNlMeansDenoising(enlarged, None, h=10, templateWindowSize=7, searchWindowSize=21)
 
@@ -113,6 +122,18 @@ def preprocess_image_variants(image_path: str) -> list[tuple[str, np.ndarray]]:
         ("sharpened_otsu", _deskew(sharpened_otsu)),
         ("enhanced_grayscale", enhanced),
     ]
+
+
+def preprocess_image_variants(image_path: str) -> list[tuple[str, np.ndarray]]:
+    """Return multiple OCR-ready variants for difficult label photos."""
+    grayscale = _load_grayscale(image_path)
+    variants: list[tuple[str, np.ndarray]] = []
+
+    for orientation_name, oriented_image in _orientation_variants(grayscale):
+        for variant_name, processed_image in _preprocess_oriented_image(oriented_image):
+            variants.append((f"{orientation_name}_{variant_name}", processed_image))
+
+    return variants
 
 
 def preprocess_image(image_path: str) -> np.ndarray:
