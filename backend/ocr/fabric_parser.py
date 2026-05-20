@@ -19,7 +19,16 @@ def _normalize_turkish(text: str) -> str:
 
 FABRIC_ALIASES: dict[str, tuple[str, ...]] = {
     "pamuk": ("pamuk", "cotton", "co", "coton"),
-    "polyester": ("polyester", "pes", "poly"),
+    "polyester": (
+        "polyester",
+        "poliester",
+        "pollester",
+        "polester",
+        "poliaster",
+        "polyest",
+        "poly",
+        "pes",
+    ),
     "viskon": ["viskon", "viscose", "vis", "rayon", "viskoz"],
     "naylon": ["naylon", "nylon", "pa", "poliamid", "polyamide"],
     "yun": ("yun", "yün", "wool", "wol"),
@@ -37,10 +46,28 @@ ALIAS_TO_FABRIC: dict[str, str] = {
 FABRIC_PATTERN = "|".join(
     sorted((re.escape(alias) for alias in ALIAS_TO_FABRIC), key=len, reverse=True)
 )
+CONTEXT_FABRIC_PATTERN = "|".join(
+    sorted((re.escape(alias) for alias in ALIAS_TO_FABRIC if len(alias) >= 4), key=len, reverse=True)
+)
 COMPOSITION_PATTERN = re.compile(
     rf"(?:(?:%\s*(?P<prefix_ratio>\d{{1,3}}))|(?:(?P<suffix_ratio>\d{{1,3}})\s*%))\s*(?P<fabric>{FABRIC_PATTERN})\b",
     re.IGNORECASE,
 )
+OCR_SUFFIX_RATIO_PATTERN = re.compile(
+    rf"\b(?P<ratio>\d{{1,3}})\s*[90o](?![%\d])\s+(?P<context>.{{0,80}}?(?P<fabric>{CONTEXT_FABRIC_PATTERN})\w*)",
+    re.IGNORECASE,
+)
+CONTEXT_COMPOSITION_PATTERN = re.compile(
+    rf"(?:(?:%\s*(?P<prefix_ratio>\d{{1,3}}))|(?:(?P<suffix_ratio>\d{{1,3}})\s*%))(?P<context>.{{0,120}}?(?P<fabric>{CONTEXT_FABRIC_PATTERN})\w*)",
+    re.IGNORECASE,
+)
+
+
+def _normalize_ocr_noise(text: str) -> str:
+    """Clean common OCR mistakes around fabric percentages and names."""
+    text = re.sub(r"\b(100|[1-9]\d?)\s*[9o]\b", r"\1% ", text)
+    text = re.sub(r"\b(poli|poly|pol)[a-z0-9]{0,4}ster[a-z0-9]*\b", "polyester", text)
+    return text
 
 def _build_warning(total_ratio: int, found_match: bool) -> str:
     """Return a warning message for invalid or missing compositions."""
@@ -50,14 +77,34 @@ def _build_warning(total_ratio: int, found_match: bool) -> str:
     return f"Fabric composition total ratio is invalid: {total_ratio}. Expected a total between 95 and 105."
 
 
+def _match_group(match: re.Match[str], name: str) -> str | None:
+    """Return a named regex group only when the active pattern defines it."""
+    try:
+        return match.group(name)
+    except IndexError:
+        return None
+
+
 def parse_fabric_composition(text: str) -> dict[str, Any]:
     """Extract normalized fabric composition entries from plain text."""
-    text = _normalize_turkish(text)
+    text = _normalize_ocr_noise(_normalize_turkish(text))
     composition: list[dict[str, int | str]] = []
     seen_entries: set[tuple[str, int]] = set()
 
-    for match in COMPOSITION_PATTERN.finditer(text):
-        ratio_text = match.group("prefix_ratio") or match.group("suffix_ratio")
+    matches = (
+        list(COMPOSITION_PATTERN.finditer(text))
+        + list(CONTEXT_COMPOSITION_PATTERN.finditer(text))
+        + list(OCR_SUFFIX_RATIO_PATTERN.finditer(text))
+    )
+
+    for match in matches:
+        ratio_text = _match_group(match, "prefix_ratio") or _match_group(match, "suffix_ratio")
+        if ratio_text is None:
+            ratio_text = _match_group(match, "ratio")
+
+        if ratio_text is None:
+            continue
+
         fabric_text = _normalize_turkish(match.group("fabric"))
         normalized_fabric = ALIAS_TO_FABRIC.get(fabric_text)
 
