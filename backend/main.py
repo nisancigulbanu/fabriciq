@@ -211,6 +211,27 @@ def _label_candidate_rank(
     )
 
 
+LABEL_UPLOAD_OPENAPI_EXTRA = {
+    "requestBody": {
+        "content": {
+            "multipart/form-data": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "format": "binary",
+                        }
+                    },
+                    "required": ["file"],
+                }
+            }
+        },
+        "required": True,
+    }
+}
+
+
 def _save_uploaded_file(uploaded_file: tuple[str, bytes]) -> tuple[str, str]:
     """Persist uploaded bytes temporarily and return suffix plus path."""
     filename, file_bytes = uploaded_file
@@ -312,7 +333,7 @@ async def debug_url_text(request: UrlRequest) -> object:
         )
 
 
-@app.post("/debug/label-ocr", response_model=None)
+@app.post("/debug/label-ocr", response_model=None, openapi_extra=LABEL_UPLOAD_OPENAPI_EXTRA)
 async def debug_label_ocr(request: Request) -> object:
     """Return OCR diagnostics for each label preprocessing variant."""
     if not _is_debug_enabled():
@@ -383,7 +404,7 @@ async def debug_label_ocr(request: Request) -> object:
                 temp_file_path.unlink()
 
 
-@app.post("/analyze/label", response_model=None)
+@app.post("/analyze/label", response_model=None, openapi_extra=LABEL_UPLOAD_OPENAPI_EXTRA)
 async def analyze_label(request: Request) -> object:
     """Analyze an uploaded clothing label image end-to-end."""
     content_type = request.headers.get("content-type", "")
