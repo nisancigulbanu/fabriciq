@@ -1,6 +1,10 @@
-const form = document.querySelector("#analyzeForm");
-const input = document.querySelector("#productUrl");
-const button = document.querySelector("#analyzeButton");
+const urlForm = document.querySelector("#urlForm");
+const labelForm = document.querySelector("#labelForm");
+const urlInput = document.querySelector("#productUrl");
+const labelInput = document.querySelector("#labelFile");
+const urlButton = document.querySelector("#urlButton");
+const labelButton = document.querySelector("#labelButton");
+const fileName = document.querySelector("#fileName");
 const serviceStatus = document.querySelector("#serviceStatus");
 const scoreRing = document.querySelector("#scoreRing");
 const scoreValue = document.querySelector("#scoreValue");
@@ -34,9 +38,9 @@ async function checkHealth() {
   }
 }
 
-function setLoading(isLoading) {
+function setButtonLoading(button, isLoading, loadingText, idleText) {
   button.disabled = isLoading;
-  button.textContent = isLoading ? "Analiz ediliyor" : "Analiz Et";
+  button.textContent = isLoading ? loadingText : idleText;
 }
 
 function showMessage(message, tone = "error") {
@@ -74,13 +78,17 @@ function renderComposition(composition) {
 function renderResult(data) {
   const score = data.score || {};
   const fabric = data.fabric || {};
+  const ocr = data.ocr || {};
   const qualityScore = Number(score.quality_score || 0);
+  const confidence = Number(ocr.avg_confidence || 0);
 
   scoreRing.style.setProperty("--score", String(qualityScore));
   scoreValue.textContent = String(qualityScore);
   gradeValue.textContent = `Not ${score.grade || "F"}`;
   scoreNote.textContent = fabric.is_valid
-    ? "Kumas oranlari dengeli okundu ve kalite skoru hesaplandi."
+    ? confidence > 0
+      ? `Kumas oranlari OCR ile okundu. OCR guveni: ${Math.round(confidence)}%.`
+      : "Kumas oranlari dengeli okundu ve kalite skoru hesaplandi."
     : fabric.warning || "Kumas oranlari dogrulanamadi.";
 
   naturalRatio.textContent = `${score.natural_ratio || 0}%`;
@@ -104,16 +112,16 @@ function renderError(payload) {
   showMessage(message);
 }
 
-form.addEventListener("submit", async (event) => {
+urlForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   clearMessage();
-  setLoading(true);
+  setButtonLoading(urlButton, true, "Analiz ediliyor", "URL Analiz Et");
 
   try {
     const response = await fetch("/analyze/url", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: input.value.trim() }),
+      body: JSON.stringify({ url: urlInput.value.trim() }),
     });
     const payload = await response.json();
 
@@ -126,7 +134,44 @@ form.addEventListener("submit", async (event) => {
   } catch {
     showMessage("Backend ile baglanti kurulamadi.");
   } finally {
-    setLoading(false);
+    setButtonLoading(urlButton, false, "Analiz ediliyor", "URL Analiz Et");
+  }
+});
+
+labelInput.addEventListener("change", () => {
+  fileName.textContent = labelInput.files[0]?.name || "Dosya secilmedi";
+});
+
+labelForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  clearMessage();
+
+  if (!labelInput.files.length) {
+    showMessage("Analiz icin bir etiket fotografi sec.");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", labelInput.files[0]);
+  setButtonLoading(labelButton, true, "Analiz ediliyor", "Gorsel Analiz Et");
+
+  try {
+    const response = await fetch("/analyze/label", {
+      method: "POST",
+      body: formData,
+    });
+    const payload = await response.json();
+
+    if (!response.ok || payload.success === false) {
+      renderError(payload);
+      return;
+    }
+
+    renderResult(payload);
+  } catch {
+    showMessage("Backend ile baglanti kurulamadi.");
+  } finally {
+    setButtonLoading(labelButton, false, "Analiz ediliyor", "Gorsel Analiz Et");
   }
 });
 

@@ -53,7 +53,7 @@ Open API docs:
 http://127.0.0.1:8000/docs
 ```
 
-Open the local web interface:
+Open the local web interface. It supports both product URL analysis and label image upload:
 
 ```text
 http://127.0.0.1:8000/
@@ -67,7 +67,7 @@ Returns service status.
 
 ### `GET /`
 
-Serves the local URL analysis interface.
+Serves the local analysis interface for product URLs and label image uploads.
 
 ### `POST /analyze/label`
 

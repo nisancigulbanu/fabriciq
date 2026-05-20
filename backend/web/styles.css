@@ -100,19 +100,53 @@ h1 {
 
 .analyze-form {
   display: grid;
+  align-content: space-between;
   gap: 10px;
   padding: 18px;
 }
 
 .analyze-form label {
+  display: block;
+  margin-bottom: 6px;
   color: var(--muted);
   font-weight: 700;
+}
+
+.analyze-form p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.analysis-forms {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
 }
 
 .input-row {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 10px;
+}
+
+.upload-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.upload-row input[type="file"] {
+  grid-column: 1 / -1;
+  padding: 12px;
+}
+
+.file-name {
+  min-width: 0;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 input {
@@ -277,11 +311,17 @@ button:disabled {
     flex-direction: column;
   }
 
+  .analysis-forms,
   .input-row,
+  .upload-row,
   .result-grid,
   .score-panel,
   .summary-panel {
     grid-template-columns: 1fr;
+  }
+
+  .upload-row input[type="file"] {
+    grid-column: auto;
   }
 
   button {
