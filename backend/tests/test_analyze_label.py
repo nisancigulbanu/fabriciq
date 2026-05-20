@@ -299,6 +299,32 @@ def test_analyze_label_uses_best_preprocessing_variant(
     assert captured["ocr_calls"] == ["bad-image", "good-image"]
 
 
+def test_analyze_label_does_not_return_advice_for_valid_low_confidence_result(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not show capture guidance when a valid composition was extracted."""
+    _install_fake_pipeline(
+        monkeypatch,
+        raw_text="100% Polyester",
+        confident_text="",
+        avg_confidence=34.0,
+        composition=[{"fabric": "polyester", "ratio": 100}],
+        is_valid=True,
+        warning=None,
+    )
+
+    response = client.post(
+        "/analyze/label",
+        files={"file": ("label.jpg", b"fake-image-bytes", "image/jpeg")},
+    )
+
+    response_json = response.json()
+    assert response.status_code == 200
+    assert response_json["fabric"]["is_valid"] is True
+    assert response_json["advice"] is None
+
+
 def test_analyze_url_returns_success_for_static_page(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Analyze a static URL through extractor, parser, and scorer."""
     captured = _install_fake_url_pipeline(monkeypatch, scraped_text="60% Cotton 40% Polyester")

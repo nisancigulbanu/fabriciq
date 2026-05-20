@@ -179,13 +179,12 @@ def _build_label_advice(
     ocr_result: dict[str, object],
     fabric_result: dict[str, object],
 ) -> str | None:
-    """Return capture guidance when OCR or parsing quality is too low."""
-    confidence = float(ocr_result.get("avg_confidence") or 0.0)
+    """Return capture guidance only when label composition cannot be trusted."""
     has_text = bool(str(ocr_result.get("raw_text") or ocr_result.get("confident_text") or "").strip())
     has_composition = bool(fabric_result.get("composition"))
     is_valid = bool(fabric_result.get("is_valid"))
 
-    if not has_text or confidence < LOW_OCR_CONFIDENCE_THRESHOLD or not has_composition or not is_valid:
+    if not has_text or not has_composition or not is_valid:
         return LABEL_CAPTURE_ADVICE
 
     return None
