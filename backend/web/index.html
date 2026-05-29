@@ -13,40 +13,88 @@
           <div>
             <p class="eyebrow">FabricIQ</p>
             <h1>Kumas analiz paneli</h1>
+            <p class="hero-copy">
+              Urun sayfasindan veya etiket fotografindan kumas bilesimini cikar, kalite skorunu aninda goster,
+              sonucu neden boyle verdigini tek ekranda acikla.
+            </p>
           </div>
           <div class="status-pill" id="serviceStatus">Backend kontrol ediliyor</div>
         </header>
 
-        <section class="analysis-forms">
-          <form class="analyze-form" id="urlForm">
-            <div>
-              <label for="productUrl">Urun linki</label>
-              <p>Magaza sayfasindan kumas bilgisini cek.</p>
+        <section class="hero-grid">
+          <section class="analysis-stack">
+            <div class="mode-switch" role="tablist" aria-label="Analiz modu">
+              <button type="button" class="mode-chip active" id="urlModeButton" data-mode="url">URL analizi</button>
+              <button type="button" class="mode-chip" id="labelModeButton" data-mode="label">Etiket analizi</button>
             </div>
-            <div class="input-row">
-              <input
-                id="productUrl"
-                name="url"
-                type="url"
-                placeholder="https://www.koton.com/..."
-                autocomplete="off"
-                required
-              />
-              <button type="submit" id="urlButton">URL Analiz Et</button>
-            </div>
-          </form>
 
-          <form class="analyze-form" id="labelForm">
-            <div>
-              <label for="labelFile">Etiket fotografi</label>
-              <p>Urun etiketinden OCR ile kumas oranlarini oku.</p>
+            <section class="analysis-forms">
+              <form class="analyze-form active" id="urlForm">
+                <div>
+                  <label for="productUrl">Urun linki</label>
+                  <p>Magaza sayfasindan kumas bilgisini cek, oranlari parse et, skoru hesapla.</p>
+                </div>
+                <div class="input-row">
+                  <input
+                    id="productUrl"
+                    name="url"
+                    type="url"
+                    placeholder="https://www.koton.com/..."
+                    autocomplete="off"
+                    required
+                  />
+                  <button type="submit" id="urlButton">URL Analiz Et</button>
+                </div>
+              </form>
+
+              <form class="analyze-form" id="labelForm" hidden>
+                <div>
+                  <label for="labelFile">Etiket fotografi</label>
+                  <p>Etiketten OCR ile kumas oranlarini oku, confidence ile birlikte yorumla.</p>
+                </div>
+                <div class="upload-row">
+                  <input id="labelFile" name="file" type="file" accept="image/*" required />
+                  <span class="file-name" id="fileName">Dosya secilmedi</span>
+                  <button type="submit" id="labelButton">Gorsel Analiz Et</button>
+                </div>
+              </form>
+            </section>
+
+            <section class="tips-panel">
+              <div>
+                <p class="panel-label">Akis</p>
+                <strong id="activeModeTitle">URL uzerinden analiz</strong>
+              </div>
+              <p id="activeModeDescription">
+                Urun linkini gir, sistem urun sayfasindaki kumas bilgisini cekip kalite skorunu olustursun.
+              </p>
+              <div class="quick-actions">
+                <button type="button" class="ghost-button" id="fillDemoUrl">Ornek URL doldur</button>
+                <button type="button" class="ghost-button" id="clearResults">Sonucu temizle</button>
+              </div>
+            </section>
+          </section>
+
+          <aside class="activity-panel">
+            <div class="section-heading compact">
+              <h2>Canli durum</h2>
+              <span id="activityBadge">Hazir</span>
             </div>
-            <div class="upload-row">
-              <input id="labelFile" name="file" type="file" accept="image/*" required />
-              <span class="file-name" id="fileName">Dosya secilmedi</span>
-              <button type="submit" id="labelButton">Gorsel Analiz Et</button>
+            <p id="activityText">Analiz baslatildiginda bu alan islenen kaynagi ve son durumu gosterir.</p>
+            <div class="activity-meta">
+              <div>
+                <p class="panel-label">Kaynak</p>
+                <strong id="sourceValue">Bekleniyor</strong>
+              </div>
+              <div>
+                <p class="panel-label">Guven</p>
+                <strong id="confidenceValue">-</strong>
+              </div>
             </div>
-          </form>
+            <div class="pulse-track" aria-hidden="true">
+              <span id="pulseBar"></span>
+            </div>
+          </aside>
         </section>
 
         <section class="result-grid" aria-live="polite">
@@ -74,16 +122,42 @@
               <p class="panel-label">Toplam</p>
               <strong id="totalRatio">0%</strong>
             </div>
+            <div>
+              <p class="panel-label">Analiz kaynagi</p>
+              <strong id="resultSource">-</strong>
+            </div>
           </div>
         </section>
 
-        <section class="composition-section">
+        <section class="detail-grid">
+          <section class="composition-section">
+            <div class="section-heading">
+              <h2>Kumas bilesimi</h2>
+              <span id="validityBadge">Sonuc yok</span>
+            </div>
+            <div class="composition-list" id="compositionList">
+              <p class="empty-state">Analiz sonucu geldiginde materyal oranlari burada listelenir.</p>
+            </div>
+          </section>
+
+          <section class="insight-section">
+            <div class="section-heading">
+              <h2>Skor aciklamasi</h2>
+              <span id="insightBadge">Bekleniyor</span>
+            </div>
+            <div class="insight-list" id="insightList">
+              <p class="empty-state">Sonuc geldiginde kalite skorunun hangi sinyallerle olustugu burada ozetlenir.</p>
+            </div>
+          </section>
+        </section>
+
+        <section class="history-section">
           <div class="section-heading">
-            <h2>Kumas bilesimi</h2>
-            <span id="validityBadge">Sonuc yok</span>
+            <h2>Son analizler</h2>
+            <span id="historyCount">0 kayit</span>
           </div>
-          <div class="composition-list" id="compositionList">
-            <p class="empty-state">Analiz sonucu geldiginde materyal oranlari burada listelenir.</p>
+          <div class="history-list" id="historyList">
+            <p class="empty-state">Henuz analiz yapilmadi.</p>
           </div>
         </section>
 
