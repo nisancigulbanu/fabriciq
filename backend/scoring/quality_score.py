@@ -12,11 +12,12 @@ FABRIC_WEIGHTS: dict[str, int] = {
     "elastan": 40,
     "akrilik": 35,
     "naylon": 30,
+    "poliamid": 30,
     "polyester": 20,
 }
 
 NATURAL_FABRICS = {"ipek", "kasmir", "yun", "keten", "pamuk"}
-SYNTHETIC_FABRICS = {"viskon", "elastan", "akrilik", "naylon", "polyester"}
+SYNTHETIC_FABRICS = {"viskon", "elastan", "akrilik", "naylon", "poliamid", "polyester"}
 
 
 def _grade_for_score(score: int) -> str:

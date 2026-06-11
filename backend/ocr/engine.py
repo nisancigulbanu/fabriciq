@@ -61,10 +61,23 @@ def _build_ocr_result(detections: list[list[object]]) -> dict[str, str | float]:
     }
 
 
+def run_easyocr(image: np.ndarray) -> dict[str, str | float]:
+    """Extract raw and confidence-filtered text from an image array with EasyOCR."""
+    detections = _get_reader().readtext(
+        image,
+        detail=1,
+        contrast_ths=0.05,
+        adjust_contrast=0.7,
+        text_threshold=0.6,
+        low_text=0.3,
+        mag_ratio=2.0,
+    )
+    return _build_ocr_result(detections)
+
+
 def extract_text_from_image(processed_image: np.ndarray) -> dict[str, str | float]:
     """Extract raw and confidence-filtered text from a processed image array."""
-    detections = _get_reader().readtext(processed_image, detail=1)
-    return _build_ocr_result(detections)
+    return run_easyocr(processed_image)
 
 
 def extract_text(image_path: str) -> dict[str, str | float]:

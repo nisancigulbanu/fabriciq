@@ -4,6 +4,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import time
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path
@@ -23,9 +24,11 @@ from backend.url_parser.dynamic import (
 
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
+FRAMES_DIR = BASE_DIR / "forweb01"
 
 app = FastAPI(title="FabricIQ Backend")
 app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
+app.mount("/frames", StaticFiles(directory=FRAMES_DIR), name="frames")
 
 
 class UrlRequest(BaseModel):
@@ -57,7 +60,8 @@ FABRIC_DEBUG_KEYWORDS = (
 )
 
 DEVELOPMENT_ENVIRONMENTS = {"development", "dev", "local"}
-LOW_OCR_CONFIDENCE_THRESHOLD = 55.0
+LOW_OCR_CONFIDENCE_THRESHOLD = 45.0
+LABEL_OCR_TIME_BUDGET_SECONDS = 35.0
 LABEL_CAPTURE_ADVICE = (
     "Etiketi daha aydinlik, parlama yapmayacak sekilde ve duz aciyla cekin. "
     "Yazi net gorunmeli, etiket kirisik olmamali ve kadraji mumkun oldugunca doldurmali."
@@ -184,7 +188,9 @@ def _build_label_advice(
     has_composition = bool(fabric_result.get("composition"))
     is_valid = bool(fabric_result.get("is_valid"))
 
-    if not has_text or not has_composition or not is_valid:
+    confidence = float(ocr_result.get("avg_confidence") or 0.0)
+
+    if not has_text or not has_composition or not is_valid or confidence < LOW_OCR_CONFIDENCE_THRESHOLD:
         return LABEL_CAPTURE_ADVICE
 
     return None
@@ -208,6 +214,25 @@ def _label_candidate_rank(
         confidence,
         len(raw_text),
     )
+
+
+def _is_confident_complete_label_result(
+    ocr_result: dict[str, object],
+    fabric_result: dict[str, object],
+) -> bool:
+    """Return true when OCR found a complete enough label result to stop searching."""
+    if not fabric_result.get("is_valid"):
+        return False
+
+    confidence = float(ocr_result.get("avg_confidence") or 0.0)
+    if confidence < LOW_OCR_CONFIDENCE_THRESHOLD:
+        return False
+
+    total_ratio = float(fabric_result.get("total_ratio") or 0.0)
+    if abs(100.0 - total_ratio) > 0.5:
+        return False
+
+    return True
 
 
 LABEL_UPLOAD_OPENAPI_EXTRA = {
@@ -349,7 +374,8 @@ async def debug_label_ocr(request: Request) -> object:
 
     try:
         from anyio.to_thread import run_sync
-        from backend.ocr.engine import extract_text_from_image
+        from backend.ocr.engine import extract_text_from_image as run_easyocr
+        from backend.ocr.engine_paddle import run_paddleocr
         from backend.ocr.fabric_parser import parse_fabric_composition
         from backend.ocr.preprocessor import preprocess_image_variants
 
@@ -358,18 +384,28 @@ async def debug_label_ocr(request: Request) -> object:
         def inspect_variants() -> list[dict[str, object]]:
             diagnostics: list[dict[str, object]] = []
 
-            for variant_name, processed_image in preprocess_image_variants(temp_path):
-                ocr_result = extract_text_from_image(processed_image)
-                parser_input = ocr_result["raw_text"] or ocr_result["confident_text"]
-                fabric_result = parse_fabric_composition(str(parser_input))
-                diagnostics.append(
-                    {
-                        "variant": variant_name,
-                        "rank": _label_candidate_rank(ocr_result, fabric_result),
-                        "ocr": ocr_result,
-                        "fabric": fabric_result,
-                    }
-                )
+            ocr_engines = (
+                ("easyocr", run_easyocr),
+                ("paddleocr", run_paddleocr),
+            )
+
+            for variant_name, processed_image in preprocess_image_variants(temp_path, exhaustive=True):
+                for engine_name, run_ocr in ocr_engines:
+                    started_at = time.perf_counter()
+                    ocr_result = run_ocr(processed_image)
+                    elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+                    parser_input = ocr_result["raw_text"] or ocr_result["confident_text"]
+                    fabric_result = parse_fabric_composition(str(parser_input))
+                    diagnostics.append(
+                        {
+                            "engine": engine_name,
+                            "variant": variant_name,
+                            "elapsed_ms": elapsed_ms,
+                            "rank": _label_candidate_rank(ocr_result, fabric_result),
+                            "ocr": ocr_result,
+                            "fabric": fabric_result,
+                        }
+                    )
 
             return diagnostics
 
@@ -416,7 +452,8 @@ async def analyze_label(request: Request) -> object:
     temp_path: str | None = None
 
     try:
-        from backend.ocr.engine import extract_text_from_image
+        from backend.ocr.engine import extract_text_from_image as run_easyocr
+        from backend.ocr.engine_paddle import run_paddleocr
         from backend.ocr.fabric_parser import parse_fabric_composition
         from backend.ocr.preprocessor import preprocess_image_variants
         from backend.scoring.quality_score import calculate_quality_score
@@ -429,30 +466,97 @@ async def analyze_label(request: Request) -> object:
             dict[str, object],
             dict[str, int | str],
         ] | None = None
+        candidate_results: list[
+            tuple[
+                tuple[int, int, float, float, int],
+                dict[str, str | float],
+                dict[str, object],
+                dict[str, int | str],
+            ]
+        ] = []
+
+        analysis_started_at = time.perf_counter()
+        timed_out = False
+        ocr_engines = (
+            ("easyocr", run_easyocr),
+            ("paddleocr", run_paddleocr),
+        )
 
         for _, processed_image in preprocess_image_variants(temp_path):
-            ocr_result = extract_text_from_image(processed_image)
-            text_to_parse = ocr_result["raw_text"] or ocr_result["confident_text"]
-            fabric_result = parse_fabric_composition(str(text_to_parse))
-            score_result = calculate_quality_score(fabric_result["composition"])
-            candidate = (
-                _label_candidate_rank(ocr_result, fabric_result),
-                ocr_result,
-                fabric_result,
-                score_result,
-            )
+            if best_result is not None and time.perf_counter() - analysis_started_at > LABEL_OCR_TIME_BUDGET_SECONDS:
+                timed_out = True
+                break
 
-            if best_result is None or candidate[0] > best_result[0]:
-                best_result = candidate
+            should_stop = False
+            for _, run_ocr in ocr_engines:
+                ocr_result = run_ocr(processed_image)
+                text_to_parse = ocr_result["raw_text"] or ocr_result["confident_text"]
+                if text_to_parse:
+                    fabric_result = parse_fabric_composition(str(text_to_parse))
+                else:
+                    fabric_result = _empty_fabric_result(
+                        warning="Fabric composition could not be extracted from the provided text."
+                    )
+                score_result = calculate_quality_score(fabric_result["composition"])
+                candidate = (
+                    _label_candidate_rank(ocr_result, fabric_result),
+                    ocr_result,
+                    fabric_result,
+                    score_result,
+                )
+                candidate_results.append(candidate)
 
-            if fabric_result.get("is_valid"):
+                if best_result is None or candidate[0] > best_result[0]:
+                    best_result = candidate
+
+                if _is_confident_complete_label_result(ocr_result, fabric_result):
+                    should_stop = True
+
+            if should_stop:
                 break
 
         if best_result is None:
             raise ValueError("No OCR preprocessing variants were generated.")
 
+        merged_composition_text = " ".join(
+            f"{item['ratio']}% {item['fabric']}"
+            for _, _, fabric_result, _ in candidate_results
+            for item in fabric_result.get("composition", [])
+            if isinstance(item, dict) and item.get("fabric") and item.get("ratio") is not None
+        )
+        if merged_composition_text:
+            merged_fabric_result = parse_fabric_composition(merged_composition_text)
+            if merged_fabric_result.get("composition"):
+                merged_ocr_result: dict[str, str | float] = {
+                    "raw_text": " ".join(
+                        str(ocr_result.get("raw_text") or "")
+                        for _, ocr_result, _, _ in candidate_results
+                        if ocr_result.get("raw_text")
+                    ),
+                    "confident_text": " ".join(
+                        str(ocr_result.get("confident_text") or "")
+                        for _, ocr_result, _, _ in candidate_results
+                        if ocr_result.get("confident_text")
+                    ),
+                    "avg_confidence": round(
+                        max(float(ocr_result.get("avg_confidence") or 0.0) for _, ocr_result, _, _ in candidate_results),
+                        2,
+                    ),
+                }
+                merged_score_result = calculate_quality_score(merged_fabric_result["composition"])
+                merged_candidate = (
+                    _label_candidate_rank(merged_ocr_result, merged_fabric_result),
+                    merged_ocr_result,
+                    merged_fabric_result,
+                    merged_score_result,
+                )
+                if merged_candidate[0] > best_result[0]:
+                    best_result = merged_candidate
+
         _, ocr_result, fabric_result, score_result = best_result
         advice = _build_label_advice(ocr_result, fabric_result)
+        if timed_out and advice is None:
+            advice = LABEL_CAPTURE_ADVICE
 
         return {
             "success": True,

@@ -3,6 +3,8 @@ uvicorn[standard]
 numpy
 opencv-python-headless
 easyocr
+paddleocr
+paddlepaddle
 python-multipart
 pytest
 httpx

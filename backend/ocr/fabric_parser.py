@@ -31,12 +31,24 @@ FABRIC_ALIASES: dict[str, tuple[str, ...]] = {
         "pes",
     ),
     "viskon": ["viskon", "viscose", "vis", "rayon", "viskoz"],
-    "naylon": ["naylon", "nylon", "pa", "poliamid", "polyamide"],
+    "poliamid": ["poliamid", "poliamit", "polyamide", "polyamid", "polyamit", "pa"],
+    "naylon": ["naylon", "nylon"],
     "yun": ("yun", "yün", "wool", "wol"),
     "ipek": ("ipek", "silk"),
     "keten": ("keten", "linen", "lin"),
     "akrilik": ("akrilik", "acrylic", "polyacrylic", "poly acrylic", "poliakrilik", "ac"),
-    "elastan": ("elastan", "elastane", "lycra", "spandex", "ea"),
+    "elastan": (
+        "elastan",
+        "elastane",
+        "elasthan",
+        "elasthane",
+        "elasten",
+        "elastene",
+        "elastano",
+        "lycra",
+        "spandex",
+        "ea",
+    ),
 }
 
 ALIAS_TO_FABRIC: dict[str, str] = {
@@ -62,10 +74,20 @@ CONTEXT_COMPOSITION_PATTERN = re.compile(
     rf"(?:(?:%\s*(?P<prefix_ratio>\d{{1,3}}))|(?:(?P<suffix_ratio>\d{{1,3}})\s*%))(?P<context>.{{0,120}}?(?P<fabric>{CONTEXT_FABRIC_PATTERN})\w*)",
     re.IGNORECASE,
 )
+FABRIC_FIRST_COMPOSITION_PATTERN = re.compile(
+    rf"\b(?P<fabric>{CONTEXT_FABRIC_PATTERN})\w*\s*(?:[:\-/,]|\s)+\s*(?:(?:%\s*(?P<prefix_ratio>\d{{1,3}}))|(?:(?P<suffix_ratio>\d{{1,3}})\s*%))",
+    re.IGNORECASE,
+)
 
 
 def _normalize_ocr_noise(text: str) -> str:
     """Clean common OCR mistakes around fabric percentages and names."""
+    text = text.replace("l00", "100")
+    text = text.replace("I00", "100")
+    text = text.replace(" %", "%")
+    text = re.sub(r"\bS0\b", "50", text)
+    text = re.sub(r"\bB0\b", "80", text)
+    text = re.sub(r"(?<=\d)[Oo](?=[ %])", "0", text)
     text = re.sub(r"\b(100|[1-9]\d?)\s*[9o]\b", r"\1% ", text)
     text = re.sub(r"\b(poli|poly|pol)[a-z0-9]{0,4}ster[a-z0-9]*\b", "polyester", text)
     return text
@@ -92,24 +114,35 @@ def _select_best_composition_subset(composition: list[dict[str, int | str]]) -> 
         return []
 
     all_total = sum(int(item["ratio"]) for item in composition)
-    if 95 <= all_total <= 105:
+    all_fabrics = [str(item["fabric"]) for item in composition]
+    if 95 <= all_total <= 105 and len(all_fabrics) == len(set(all_fabrics)):
         return composition
 
     if len(composition) > 16:
         return composition
 
-    valid_subsets: list[tuple[int, int, int, tuple[dict[str, int | str], ...]]] = []
+    valid_subsets: list[tuple[int, int, int, int, tuple[dict[str, int | str], ...]]] = []
 
     for subset_size in range(1, len(composition) + 1):
         for subset in combinations(composition, subset_size):
             total = sum(int(item["ratio"]) for item in subset)
             if 95 <= total <= 105:
-                valid_subsets.append((abs(100 - total), -subset_size, composition.index(subset[0]), subset))
+                fabrics = [str(item["fabric"]) for item in subset]
+                duplicate_fabric_count = len(fabrics) - len(set(fabrics))
+                valid_subsets.append(
+                    (
+                        duplicate_fabric_count,
+                        abs(100 - total),
+                        -subset_size,
+                        composition.index(subset[0]),
+                        subset,
+                    )
+                )
 
     if not valid_subsets:
         return composition
 
-    _, _, _, best_subset = min(valid_subsets, key=lambda item: item[:3])
+    _, _, _, _, best_subset = min(valid_subsets, key=lambda item: item[:4])
     return list(best_subset)
 
 
@@ -123,6 +156,7 @@ def parse_fabric_composition(text: str) -> dict[str, Any]:
         list(COMPOSITION_PATTERN.finditer(text))
         + list(CONTEXT_COMPOSITION_PATTERN.finditer(text))
         + list(OCR_SUFFIX_RATIO_PATTERN.finditer(text))
+        + list(FABRIC_FIRST_COMPOSITION_PATTERN.finditer(text))
     )
 
     for match in matches:

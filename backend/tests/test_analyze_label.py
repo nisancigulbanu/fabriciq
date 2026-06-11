@@ -52,6 +52,7 @@ def _install_fake_pipeline(
     fake_parser = types.ModuleType("ocr.fabric_parser")
 
     def parse_fabric_composition(text: str) -> dict[str, object]:
+        captured.setdefault("texts_to_parse", []).append(text)  # type: ignore[union-attr]
         captured["text_to_parse"] = text
         parsed_composition = composition or [{"fabric": "pamuk", "ratio": 60}, {"fabric": "polyester", "ratio": 40}]
         return {
@@ -71,8 +72,16 @@ def _install_fake_pipeline(
         "synthetic_ratio": 40,
     }
 
+    fake_paddle_engine = types.ModuleType("ocr.engine_paddle")
+    fake_paddle_engine.run_paddleocr = lambda processed_image: {
+        "raw_text": "",
+        "confident_text": "",
+        "avg_confidence": 0.0,
+    }
+
     monkeypatch.setitem(sys.modules, "backend.ocr.preprocessor", fake_preprocessor)
     monkeypatch.setitem(sys.modules, "backend.ocr.engine", fake_engine)
+    monkeypatch.setitem(sys.modules, "backend.ocr.engine_paddle", fake_paddle_engine)
     monkeypatch.setitem(sys.modules, "backend.ocr.fabric_parser", fake_parser)
     monkeypatch.setitem(sys.modules, "backend.scoring.quality_score", fake_scorer)
 
@@ -137,8 +146,16 @@ def _install_fake_multi_variant_pipeline(monkeypatch: pytest.MonkeyPatch) -> dic
         "synthetic_ratio": 40,
     }
 
+    fake_paddle_engine = types.ModuleType("ocr.engine_paddle")
+    fake_paddle_engine.run_paddleocr = lambda processed_image: {
+        "raw_text": "",
+        "confident_text": "",
+        "avg_confidence": 0.0,
+    }
+
     monkeypatch.setitem(sys.modules, "backend.ocr.preprocessor", fake_preprocessor)
     monkeypatch.setitem(sys.modules, "backend.ocr.engine", fake_engine)
+    monkeypatch.setitem(sys.modules, "backend.ocr.engine_paddle", fake_paddle_engine)
     monkeypatch.setitem(sys.modules, "backend.ocr.fabric_parser", fake_parser)
     monkeypatch.setitem(sys.modules, "backend.scoring.quality_score", fake_scorer)
 
@@ -251,7 +268,7 @@ def test_analyze_label_uses_raw_text_when_confident_text_is_empty(
     )
 
     assert response.status_code == 200
-    assert captured["text_to_parse"] == "60% Cotton 40% PES"
+    assert captured["texts_to_parse"][0] == "60% Cotton 40% PES"
 
 
 def test_analyze_label_returns_capture_advice_when_ocr_is_weak(
@@ -299,11 +316,11 @@ def test_analyze_label_uses_best_preprocessing_variant(
     assert captured["ocr_calls"] == ["bad-image", "good-image"]
 
 
-def test_analyze_label_does_not_return_advice_for_valid_low_confidence_result(
+def test_analyze_label_returns_advice_for_valid_low_confidence_result(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Do not show capture guidance when a valid composition was extracted."""
+    """Show capture guidance when a parsed composition came from weak OCR."""
     _install_fake_pipeline(
         monkeypatch,
         raw_text="100% Polyester",
@@ -322,7 +339,150 @@ def test_analyze_label_does_not_return_advice_for_valid_low_confidence_result(
     response_json = response.json()
     assert response.status_code == 200
     assert response_json["fabric"]["is_valid"] is True
-    assert response_json["advice"] is None
+    assert response_json["advice"]
+    assert "duz aciyla" in response_json["advice"]
+
+
+def test_analyze_label_continues_after_partial_valid_total(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep searching when a valid-but-incomplete OCR result totals below 100."""
+    captured: dict[str, object] = {"ocr_calls": []}
+
+    fake_preprocessor = types.ModuleType("ocr.preprocessor")
+    fake_preprocessor.preprocess_image_variants = lambda image_path: [
+        ("partial", "partial-image"),
+        ("complete", "complete-image"),
+    ]
+
+    fake_engine = types.ModuleType("ocr.engine")
+
+    def extract_text_from_image(processed_image: str) -> dict[str, str | float]:
+        captured["ocr_calls"].append(processed_image)  # type: ignore[union-attr]
+        if processed_image == "partial-image":
+            return {
+                "raw_text": "98% Cotton",
+                "confident_text": "98% Cotton",
+                "avg_confidence": 92.0,
+            }
+
+        return {
+            "raw_text": "98% Cotton 2% Elastane",
+            "confident_text": "98% Cotton 2% Elastane",
+            "avg_confidence": 88.0,
+        }
+
+    fake_engine.extract_text_from_image = extract_text_from_image
+
+    fake_paddle_engine = types.ModuleType("ocr.engine_paddle")
+    fake_paddle_engine.run_paddleocr = lambda processed_image: {
+        "raw_text": "",
+        "confident_text": "",
+        "avg_confidence": 0.0,
+    }
+
+    from backend.ocr.fabric_parser import parse_fabric_composition
+
+    fake_parser = types.ModuleType("ocr.fabric_parser")
+    fake_parser.parse_fabric_composition = parse_fabric_composition
+
+    fake_scorer = types.ModuleType("scoring.quality_score")
+    fake_scorer.calculate_quality_score = lambda parsed_composition: {
+        "quality_score": 74,
+        "grade": "C",
+        "natural_ratio": 98,
+        "synthetic_ratio": 2,
+    }
+
+    monkeypatch.setitem(sys.modules, "backend.ocr.preprocessor", fake_preprocessor)
+    monkeypatch.setitem(sys.modules, "backend.ocr.engine", fake_engine)
+    monkeypatch.setitem(sys.modules, "backend.ocr.engine_paddle", fake_paddle_engine)
+    monkeypatch.setitem(sys.modules, "backend.ocr.fabric_parser", fake_parser)
+    monkeypatch.setitem(sys.modules, "backend.scoring.quality_score", fake_scorer)
+
+    response = client.post(
+        "/analyze/label",
+        files={"file": ("label.jpg", b"fake-image-bytes", "image/jpeg")},
+    )
+
+    response_json = response.json()
+    assert response.status_code == 200
+    assert captured["ocr_calls"] == ["partial-image", "complete-image"]
+    assert response_json["fabric"]["composition"] == [
+        {"fabric": "pamuk", "ratio": 98},
+        {"fabric": "elastan", "ratio": 2},
+    ]
+
+
+def test_analyze_label_merges_composition_across_ocr_variants(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Merge partial composition entries when different variants read different rows."""
+    fake_preprocessor = types.ModuleType("ocr.preprocessor")
+    fake_preprocessor.preprocess_image_variants = lambda image_path: [
+        ("top_rows", "top-image"),
+        ("bottom_rows", "bottom-image"),
+    ]
+
+    fake_engine = types.ModuleType("ocr.engine")
+
+    def extract_text_from_image(processed_image: str) -> dict[str, str | float]:
+        if processed_image == "top-image":
+            return {
+                "raw_text": "83% viskoz 15% poliamit",
+                "confident_text": "83% viskoz 15% poliamit",
+                "avg_confidence": 91.0,
+            }
+
+        return {
+            "raw_text": "15% poliamit 2% elastan",
+            "confident_text": "15% poliamit 2% elastan",
+            "avg_confidence": 84.0,
+        }
+
+    fake_engine.extract_text_from_image = extract_text_from_image
+
+    fake_paddle_engine = types.ModuleType("ocr.engine_paddle")
+    fake_paddle_engine.run_paddleocr = lambda processed_image: {
+        "raw_text": "",
+        "confident_text": "",
+        "avg_confidence": 0.0,
+    }
+
+    from backend.ocr.fabric_parser import parse_fabric_composition
+
+    fake_parser = types.ModuleType("ocr.fabric_parser")
+    fake_parser.parse_fabric_composition = parse_fabric_composition
+
+    fake_scorer = types.ModuleType("scoring.quality_score")
+    fake_scorer.calculate_quality_score = lambda parsed_composition: {
+        "quality_score": 51,
+        "grade": "F",
+        "natural_ratio": 0,
+        "synthetic_ratio": 100,
+    }
+
+    monkeypatch.setitem(sys.modules, "backend.ocr.preprocessor", fake_preprocessor)
+    monkeypatch.setitem(sys.modules, "backend.ocr.engine", fake_engine)
+    monkeypatch.setitem(sys.modules, "backend.ocr.engine_paddle", fake_paddle_engine)
+    monkeypatch.setitem(sys.modules, "backend.ocr.fabric_parser", fake_parser)
+    monkeypatch.setitem(sys.modules, "backend.scoring.quality_score", fake_scorer)
+
+    response = client.post(
+        "/analyze/label",
+        files={"file": ("label.jpg", b"fake-image-bytes", "image/jpeg")},
+    )
+
+    response_json = response.json()
+    assert response.status_code == 200
+    assert response_json["fabric"]["composition"] == [
+        {"fabric": "viskon", "ratio": 83},
+        {"fabric": "poliamid", "ratio": 15},
+        {"fabric": "elastan", "ratio": 2},
+    ]
+    assert response_json["fabric"]["total_ratio"] == 100
 
 
 def test_analyze_url_returns_success_for_static_page(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

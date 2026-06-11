@@ -64,3 +64,27 @@ def test_parser_ignores_spurious_label_ratio_when_exact_total_exists() -> None:
     assert result["composition"] == [{"fabric": "polyester", "ratio": 100}]
     assert result["total_ratio"] == 100
     assert result["is_valid"] is True
+
+
+def test_parser_reads_fabric_first_percentages() -> None:
+    """Parse labels where the fabric name appears before its percentage."""
+    result = parse_fabric_composition("Cotton 98% Elastane 2%")
+
+    assert result["composition"] == [
+        {"fabric": "pamuk", "ratio": 98},
+        {"fabric": "elastan", "ratio": 2},
+    ]
+    assert result["total_ratio"] == 100
+    assert result["is_valid"] is True
+
+
+def test_parser_keeps_small_elastane_ratio_in_ratio_first_text() -> None:
+    """Keep small elastane percentages when OCR reads a normal ratio-first label."""
+    result = parse_fabric_composition("98% Cotton 2% Elasthane")
+
+    assert result["composition"] == [
+        {"fabric": "pamuk", "ratio": 98},
+        {"fabric": "elastan", "ratio": 2},
+    ]
+    assert result["total_ratio"] == 100
+    assert result["is_valid"] is True
