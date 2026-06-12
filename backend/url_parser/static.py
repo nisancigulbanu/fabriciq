@@ -8,10 +8,29 @@ from typing import Any, Iterable
 
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse
 
 from .detector import FABRIC_KEYWORDS, REQUEST_TIMEOUT_SECONDS, USER_AGENT
 
 
+SITE_PROFILES = {
+    "trendyol.com": {
+        "keywords": ["materyal", "kumaş", "kumas", "içerik", "icerik", "ürün özellikleri"],
+        "selectors": [
+            ".detail-attr-container",
+            ".product-detail-container",
+            "[class*='product-detail']",
+        ],
+    },
+    "zara.com": {
+        "keywords": ["composition", "materials", "care", "fabric"],
+        "selectors": [
+            "[class*='composition']",
+            "[class*='product-detail']",
+            "[data-qa*='composition']",
+        ],
+    },
+}
 PRODUCT_TEXT_SELECTORS = (
     "script[type='application/ld+json']",
     "[itemtype*='schema.org/Product']",
@@ -65,6 +84,15 @@ def _request_page(url: str) -> requests.Response:
     )
     response.raise_for_status()
     return response
+
+
+def _profile_for_url(url: str) -> dict[str, object] | None:
+    """Return an optional site profile for a URL domain."""
+    hostname = urlparse(url).hostname or ""
+    for domain, profile in SITE_PROFILES.items():
+        if hostname == domain or hostname.endswith(f".{domain}"):
+            return profile
+    return None
 
 
 def _iter_json_ld_nodes(value: Any) -> Iterable[Any]:
@@ -128,27 +156,63 @@ def _extract_json_ld_text(soup: BeautifulSoup) -> str:
     return "\n".join(dict.fromkeys(chunks))
 
 
-def _extract_selector_text(soup: BeautifulSoup) -> str:
+def _extract_selector_text(soup: BeautifulSoup, url: str) -> str:
     """Extract plain text from likely product detail and description areas."""
     chunks: list[str] = []
+    selectors = list(PRODUCT_TEXT_SELECTORS)
+    profile = _profile_for_url(url)
+    if profile:
+        selectors.extend(str(selector) for selector in profile.get("selectors", []))
 
-    for selector in PRODUCT_TEXT_SELECTORS:
+    for selector in selectors:
         if selector.startswith("script"):
             continue
 
         for element in soup.select(selector):
             text = element.get_text(" ", strip=True)
-            chunks.extend(_extract_fabric_fragments(text))
+            chunks.extend(_extract_fabric_fragments(text, url=url))
 
     return "\n".join(dict.fromkeys(chunks))
 
 
-def _extract_fabric_fragments(text: str) -> list[str]:
+def _extract_meta_text(soup: BeautifulSoup) -> str:
+    """Extract useful meta description/product text."""
+    chunks: list[str] = []
+    for selector in (
+        "meta[name='description']",
+        "meta[property='og:description']",
+        "meta[name='twitter:description']",
+    ):
+        for element in soup.select(selector):
+            content = element.get("content")
+            if isinstance(content, str) and content.strip():
+                chunks.append(content.strip())
+    return "\n".join(dict.fromkeys(chunks))
+
+
+def _extract_script_text(soup: BeautifulSoup) -> str:
+    """Extract fabric-looking snippets from non-JSON script data."""
+    chunks: list[str] = []
+    for script in soup.select("script:not([type='application/ld+json'])"):
+        script_text = script.string or script.get_text(" ", strip=True)
+        if not script_text:
+            continue
+        if any(keyword in script_text.lower() for keyword in FABRIC_KEYWORDS):
+            chunks.extend(_extract_fabric_fragments(script_text))
+    return "\n".join(dict.fromkeys(chunks))
+
+
+def _extract_fabric_fragments(text: str, *, url: str | None = None) -> list[str]:
     """Return deduplicated text fragments that contain fabric-related terms."""
     normalized_text = HTML_BREAK_PATTERN.sub("\n", text)
     normalized_text = HTML_TAG_PATTERN.sub(" ", normalized_text)
     fragments = FRAGMENT_SPLIT_PATTERN.split(normalized_text)
     relevant_fragments: list[str] = []
+    keywords = list(FABRIC_KEYWORDS)
+    if url:
+        profile = _profile_for_url(url)
+        if profile:
+            keywords.extend(str(keyword) for keyword in profile.get("keywords", []))
 
     for fragment in fragments:
         cleaned_fragment = " ".join(fragment.split())
@@ -156,18 +220,25 @@ def _extract_fabric_fragments(text: str) -> list[str]:
             continue
 
         lower_fragment = cleaned_fragment.lower()
-        if any(keyword in lower_fragment for keyword in FABRIC_KEYWORDS):
+        if "%" in cleaned_fragment or any(keyword in lower_fragment for keyword in keywords):
             relevant_fragments.append(cleaned_fragment)
 
     return list(dict.fromkeys(relevant_fragments))
 
 
-def extract_static_text(url: str) -> str:
-    """Extract raw plain text from a static product page."""
+def extract_static_candidates(url: str) -> list[str]:
+    """Extract fabric candidate text blocks from a static product page."""
     response = _request_page(url)
     soup = BeautifulSoup(response.text, "html.parser")
 
     json_ld_text = _extract_json_ld_text(soup)
-    selector_text = _extract_selector_text(soup)
+    selector_text = _extract_selector_text(soup, url)
+    meta_text = "\n".join(_extract_fabric_fragments(_extract_meta_text(soup), url=url))
+    script_text = _extract_script_text(soup)
 
-    return "\n".join(chunk for chunk in (json_ld_text, selector_text) if chunk)
+    return [chunk for chunk in dict.fromkeys((json_ld_text, selector_text, meta_text, script_text)) if chunk]
+
+
+def extract_static_text(url: str) -> str:
+    """Extract raw plain text from a static product page."""
+    return "\n".join(extract_static_candidates(url))

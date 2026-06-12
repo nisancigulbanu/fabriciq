@@ -8,12 +8,18 @@ import cv2
 import numpy as np
 
 MAX_INPUT_LONG_EDGE = 1800
+MAX_OCR_VARIANT_LONG_EDGE = 1000
 OCR_SCALE_FACTOR = 1.6
 FAST_VARIANT_NAMES = {
-    "enhanced_grayscale",
+    "band_upper_grayscale",
+    "band_lower_grayscale",
+    "band_middle_grayscale",
+    "band_upper_denoise_clahe",
+    "band_lower_denoise_clahe",
+    "grayscale_resize",
+    "denoise_clahe",
     "sharpened_otsu",
     "adaptive_gaussian",
-    "adaptive_threshold_gaussian_11",
 }
 
 
@@ -52,12 +58,28 @@ def _rotate_image(image: np.ndarray, angle: float) -> np.ndarray:
 
 def _resize_for_ocr(grayscale: np.ndarray) -> np.ndarray:
     """Scale label text up before OCR."""
-    return cv2.resize(
+    enlarged = cv2.resize(
         grayscale,
         None,
         fx=OCR_SCALE_FACTOR,
         fy=OCR_SCALE_FACTOR,
         interpolation=cv2.INTER_CUBIC,
+    )
+    return _limit_variant_size(enlarged)
+
+
+def _limit_variant_size(image: np.ndarray) -> np.ndarray:
+    """Keep OCR variants large enough to read but bounded for CPU latency."""
+    height, width = image.shape[:2]
+    long_edge = max(height, width)
+    if long_edge <= MAX_OCR_VARIANT_LONG_EDGE:
+        return image
+
+    scale = MAX_OCR_VARIANT_LONG_EDGE / long_edge
+    return cv2.resize(
+        image,
+        (max(1, round(width * scale)), max(1, round(height * scale))),
+        interpolation=cv2.INTER_AREA,
     )
 
 
@@ -142,12 +164,39 @@ def _limit_image_size(grayscale: np.ndarray) -> np.ndarray:
 
 def _orientation_variants(grayscale: np.ndarray) -> list[tuple[str, np.ndarray]]:
     """Return likely reading orientations for label photos."""
-    return [
+    variants = [
         ("original", grayscale),
         ("rot90_clockwise", cv2.rotate(grayscale, cv2.ROTATE_90_CLOCKWISE)),
         ("rot90_counterclockwise", cv2.rotate(grayscale, cv2.ROTATE_90_COUNTERCLOCKWISE)),
         ("rot180", cv2.rotate(grayscale, cv2.ROTATE_180)),
     ]
+    height, width = grayscale.shape[:2]
+    if height > width * 1.25:
+        return [variants[2], variants[1], variants[0], variants[3]]
+    return [variants[2], variants[1], variants[0], variants[3]]
+
+
+def _long_label_band_variants(image: np.ndarray, prefix: str) -> list[tuple[str, np.ndarray]]:
+    """Return OCR crops for long label photos where full-line OCR is noisy."""
+    height, width = image.shape[:2]
+    if width < height * 2.4:
+        return []
+
+    bands = (
+        ("upper", 0.18, 0.46),
+        ("lower", 0.52, 0.84),
+        ("middle", 0.34, 0.68),
+    )
+    variants: list[tuple[str, np.ndarray]] = []
+    for band_name, start_fraction, end_fraction in bands:
+        y1 = max(0, int(height * start_fraction))
+        y2 = min(height, int(height * end_fraction))
+        if y2 - y1 < 24:
+            continue
+        crop = image[y1:y2, :]
+        crop = cv2.resize(crop, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        variants.append((f"band_{band_name}_{prefix}", crop))
+    return variants
 
 
 def _preprocess_oriented_image(grayscale: np.ndarray) -> list[tuple[str, np.ndarray]]:
@@ -179,7 +228,16 @@ def _preprocess_oriented_image(grayscale: np.ndarray) -> list[tuple[str, np.ndar
     _, otsu = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     _, sharpened_otsu = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    return [
+    band_variants = (
+        _long_label_band_variants(enlarged, "grayscale")
+        + _long_label_band_variants(enhanced, "denoise_clahe")
+    )
+
+    return band_variants + [
+        ("original", _limit_variant_size(grayscale)),
+        ("grayscale_resize", enlarged),
+        ("grayscale_clahe", clahe.apply(enlarged)),
+        ("denoise_clahe", enhanced),
         ("adaptive_gaussian", _deskew(adaptive_gaussian)),
         ("adaptive_mean", _deskew(adaptive_mean)),
         ("otsu", _deskew(otsu)),
@@ -204,11 +262,11 @@ def preprocess_image_variants(image_path: str, *, exhaustive: bool = False) -> l
         for variant_name, processed_image in _preprocess_oriented_image(oriented_image):
             if not exhaustive and variant_name not in FAST_VARIANT_NAMES:
                 continue
-            if not exhaustive and orientation_name == "rot180" and variant_name != "enhanced_grayscale":
+            if not exhaustive and orientation_name == "rot180":
                 continue
             variants.append((f"{orientation_name}_{variant_name}", processed_image))
 
-    return variants
+    return variants if exhaustive else variants[:10]
 
 
 def preprocess_image(image_path: str) -> np.ndarray:

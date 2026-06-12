@@ -7,7 +7,6 @@ from .static import _extract_fabric_fragments
 
 
 DYNAMIC_TIMEOUT_MS = 20000
-POST_LOAD_WAIT_MS = 1500
 PRODUCT_HINT_SELECTORS = (
     "[class*='product']",
     "[id*='product']",
@@ -21,6 +20,15 @@ PRODUCT_HINT_SELECTORS = (
     "[class*='kumas']",
     "[class*='materyal']",
     "[class*='icerik']",
+)
+POPUP_DISMISS_SELECTORS = (
+    "button:has-text('Kabul')",
+    "button:has-text('Accept')",
+    "button:has-text('Tamam')",
+    "button:has-text('Close')",
+    "button:has-text('Kapat')",
+    "[aria-label*='close' i]",
+    "[aria-label*='kapat' i]",
 )
 
 
@@ -89,6 +97,26 @@ def _extract_visible_text(page: object) -> str:
     return filtered_text
 
 
+def _dismiss_popups(page: object) -> None:
+    """Best-effort close cookie, campaign, and modal popups."""
+    for selector in POPUP_DISMISS_SELECTORS:
+        try:
+            locator = page.locator(selector).first
+            if locator.is_visible(timeout=500):
+                locator.click(timeout=1000)
+        except Exception:
+            continue
+
+
+def _wait_for_product_hints(page: object, playwright_timeout_error: type[Exception]) -> None:
+    """Wait briefly for likely product text containers without fixed sleeps."""
+    selector = ", ".join(PRODUCT_HINT_SELECTORS)
+    try:
+        page.locator(selector).first.wait_for(state="attached", timeout=5000)
+    except playwright_timeout_error:
+        pass
+
+
 def extract_dynamic_text(url: str) -> str:
     """Render a JavaScript-heavy product page and return plain text for fabric parsing."""
     sync_playwright, playwright_error, playwright_timeout_error = _import_playwright()
@@ -96,6 +124,7 @@ def extract_dynamic_text(url: str) -> str:
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
+            context = None
             try:
                 context = browser.new_context(
                     user_agent=USER_AGENT,
@@ -112,9 +141,12 @@ def extract_dynamic_text(url: str) -> str:
                     page.wait_for_load_state("networkidle", timeout=8000)
                 except playwright_timeout_error:
                     pass
-                page.wait_for_timeout(POST_LOAD_WAIT_MS)
+                _dismiss_popups(page)
+                _wait_for_product_hints(page, playwright_timeout_error)
                 return _extract_visible_text(page)
             finally:
+                if context is not None:
+                    context.close()
                 browser.close()
     except playwright_timeout_error as exc:
         raise DynamicScraperTimeoutError(str(exc)) from exc

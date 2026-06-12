@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import importlib
 import os
 import sys
 import tempfile
@@ -66,6 +67,13 @@ LABEL_CAPTURE_ADVICE = (
     "Etiketi daha aydinlik, parlama yapmayacak sekilde ve duz aciyla cekin. "
     "Yazi net gorunmeli, etiket kirisik olmamali ve kadraji mumkun oldugunca doldurmali."
 )
+NO_FABRIC_MESSAGE = (
+    "Bu urun icin kumas bilesimi bulunamadi. Daha net etiket fotografi yukleyebilir "
+    "veya urun aciklamasinda kumas bilgisinin yer aldigi bir link verebilirsiniz."
+)
+URL_FABRIC_NOT_FOUND_MESSAGE = (
+    "Bu urun sayfasindan kumas bilgisi otomatik alinamadi. Etiket fotografi yukleyebilirsiniz."
+)
 
 
 def _empty_ocr_result() -> dict[str, str | float]:
@@ -84,6 +92,9 @@ def _empty_fabric_result(warning: str | None = None) -> dict[str, object]:
         "total_ratio": 0,
         "is_valid": False,
         "warning": warning,
+        "confidence_score": 0.0,
+        "confidence_label": "low",
+        "warnings": [warning] if warning else [],
     }
 
 
@@ -118,6 +129,12 @@ def _error_response(
             "fabric": _empty_fabric_result(warning=message),
             "score": _empty_score_result(),
             "advice": None,
+            "source": None,
+            "raw_text": "",
+            "composition": [],
+            "confidence_score": 0.0,
+            "confidence_label": "low",
+            "warnings": [message],
             "error": {
                 "code": code,
                 "message": message,
@@ -196,6 +213,72 @@ def _build_label_advice(
     return None
 
 
+def _confidence_label(score: float) -> str:
+    """Return a compact confidence label for public responses."""
+    if score >= 0.75:
+        return "high"
+    if score >= 0.45:
+        return "medium"
+    return "low"
+
+
+def _composition_signature(composition: object) -> tuple[tuple[str, float], ...]:
+    """Return a stable signature for comparing parsed composition candidates."""
+    if not isinstance(composition, list):
+        return ()
+    entries: list[tuple[str, float]] = []
+    for item in composition:
+        if not isinstance(item, dict):
+            continue
+        try:
+            entries.append((str(item.get("fabric") or ""), float(item.get("ratio") or 0)))
+        except (TypeError, ValueError):
+            continue
+    return tuple(sorted(entries))
+
+
+def _score_if_valid(
+    fabric_result: dict[str, object],
+    calculate_quality_score: object,
+) -> dict[str, int | str]:
+    """Calculate quality only for trusted fabric compositions."""
+    if not fabric_result.get("is_valid") or not fabric_result.get("composition"):
+        return _empty_score_result()
+    return calculate_quality_score(fabric_result["composition"])  # type: ignore[operator]
+
+
+def _build_public_analysis_fields(
+    *,
+    source: str,
+    raw_text: str,
+    fabric_result: dict[str, object],
+    ocr_result: dict[str, object] | None = None,
+    agreement_count: int = 1,
+) -> dict[str, object]:
+    """Build new flat response fields while keeping legacy nested fields."""
+    parser_confidence = float(fabric_result.get("confidence_score") or 0.0)
+    confidence_score = parser_confidence
+    if ocr_result is not None:
+        ocr_confidence = max(0.0, min(1.0, float(ocr_result.get("avg_confidence") or 0.0) / 100.0))
+        confidence_score = (parser_confidence * 0.65) + (ocr_confidence * 0.25)
+        if agreement_count > 1:
+            confidence_score += min(0.1, 0.04 * (agreement_count - 1))
+    confidence_score = round(max(0.0, min(1.0, confidence_score)), 2)
+
+    warnings = list(fabric_result.get("warnings") or [])
+    if not fabric_result.get("composition") and NO_FABRIC_MESSAGE not in warnings:
+        warnings.append(NO_FABRIC_MESSAGE)
+
+    return {
+        "source": source,
+        "raw_text": raw_text,
+        "composition": fabric_result.get("composition") or [],
+        "confidence_score": confidence_score,
+        "confidence_label": _confidence_label(confidence_score),
+        "warnings": warnings,
+    }
+
+
 def _label_candidate_rank(
     ocr_result: dict[str, object],
     fabric_result: dict[str, object],
@@ -225,10 +308,11 @@ def _is_confident_complete_label_result(
         return False
 
     confidence = float(ocr_result.get("avg_confidence") or 0.0)
-    if confidence < LOW_OCR_CONFIDENCE_THRESHOLD:
+    parser_confidence = float(fabric_result.get("confidence_score") or 0.0)
+    if confidence < LOW_OCR_CONFIDENCE_THRESHOLD and parser_confidence < 0.8:
         return False
 
-    total_ratio = float(fabric_result.get("total_ratio") or 0.0)
+    total_ratio = float(fabric_result.get("raw_total_ratio") or fabric_result.get("total_ratio") or 0.0)
     if abs(100.0 - total_ratio) > 0.5:
         return False
 
@@ -477,19 +561,21 @@ async def analyze_label(request: Request) -> object:
 
         analysis_started_at = time.perf_counter()
         timed_out = False
-        ocr_engines = (
-            ("easyocr", run_easyocr),
-            ("paddleocr", run_paddleocr),
-        )
-
         for _, processed_image in preprocess_image_variants(temp_path):
             if best_result is not None and time.perf_counter() - analysis_started_at > LABEL_OCR_TIME_BUDGET_SECONDS:
                 timed_out = True
                 break
 
             should_stop = False
-            for _, run_ocr in ocr_engines:
-                ocr_result = run_ocr(processed_image)
+            easyocr_result = run_easyocr(processed_image)
+            ocr_results = [easyocr_result]
+            if (
+                not str(easyocr_result.get("raw_text") or easyocr_result.get("confident_text") or "").strip()
+                or float(easyocr_result.get("avg_confidence") or 0.0) < 20.0
+            ):
+                ocr_results.append(run_paddleocr(processed_image))
+
+            for ocr_result in ocr_results:
                 text_to_parse = ocr_result["raw_text"] or ocr_result["confident_text"]
                 if text_to_parse:
                     fabric_result = parse_fabric_composition(str(text_to_parse))
@@ -497,7 +583,7 @@ async def analyze_label(request: Request) -> object:
                     fabric_result = _empty_fabric_result(
                         warning="Fabric composition could not be extracted from the provided text."
                     )
-                score_result = calculate_quality_score(fabric_result["composition"])
+                score_result = _score_if_valid(fabric_result, calculate_quality_score)
                 candidate = (
                     _label_candidate_rank(ocr_result, fabric_result),
                     ocr_result,
@@ -525,7 +611,43 @@ async def analyze_label(request: Request) -> object:
             if isinstance(item, dict) and item.get("fabric") and item.get("ratio") is not None
         )
         if merged_composition_text:
-            merged_fabric_result = parse_fabric_composition(merged_composition_text)
+            merged_by_fabric: dict[str, float] = {}
+            merged_order: list[str] = []
+            for _, _, candidate_fabric_result, _ in candidate_results:
+                merge_items = candidate_fabric_result.get("raw_composition") or candidate_fabric_result.get("composition", [])
+                for item in merge_items:
+                    if not isinstance(item, dict) or not item.get("fabric"):
+                        continue
+                    fabric_name = str(item["fabric"])
+                    try:
+                        ratio_value = float(item.get("ratio") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if fabric_name not in merged_by_fabric:
+                        merged_order.append(fabric_name)
+                    merged_by_fabric[fabric_name] = max(merged_by_fabric.get(fabric_name, 0.0), ratio_value)
+
+            merged_total = sum(merged_by_fabric.values())
+            if 95 <= merged_total <= 105:
+                merged_fabric_result = {
+                    "composition": [
+                        {
+                            "fabric": fabric_name,
+                            "ratio": int(ratio) if ratio.is_integer() else round(ratio, 2),
+                        }
+                        for fabric_name in merged_order
+                        for ratio in [merged_by_fabric[fabric_name]]
+                    ],
+                    "total_ratio": int(merged_total) if merged_total.is_integer() else round(merged_total, 2),
+                    "raw_total_ratio": int(merged_total) if merged_total.is_integer() else round(merged_total, 2),
+                    "is_valid": True,
+                    "warning": None,
+                    "confidence_score": 0.9,
+                    "confidence_label": "high",
+                    "warnings": [],
+                }
+            else:
+                merged_fabric_result = parse_fabric_composition(merged_composition_text)
             if merged_fabric_result.get("composition"):
                 merged_ocr_result: dict[str, str | float] = {
                     "raw_text": " ".join(
@@ -543,7 +665,7 @@ async def analyze_label(request: Request) -> object:
                         2,
                     ),
                 }
-                merged_score_result = calculate_quality_score(merged_fabric_result["composition"])
+                merged_score_result = _score_if_valid(merged_fabric_result, calculate_quality_score)
                 merged_candidate = (
                     _label_candidate_rank(merged_ocr_result, merged_fabric_result),
                     merged_ocr_result,
@@ -557,13 +679,30 @@ async def analyze_label(request: Request) -> object:
         advice = _build_label_advice(ocr_result, fabric_result)
         if timed_out and advice is None:
             advice = LABEL_CAPTURE_ADVICE
+        if not fabric_result.get("composition"):
+            advice = NO_FABRIC_MESSAGE
+
+        best_signature = _composition_signature(fabric_result.get("composition"))
+        agreement_count = sum(
+            1
+            for _, _, candidate_fabric, _ in candidate_results
+            if best_signature and _composition_signature(candidate_fabric.get("composition")) == best_signature
+        )
+        public_fields = _build_public_analysis_fields(
+            source="ocr",
+            raw_text=str(ocr_result.get("raw_text") or ocr_result.get("confident_text") or ""),
+            fabric_result=fabric_result,
+            ocr_result=ocr_result,
+            agreement_count=agreement_count,
+        )
 
         return {
-            "success": True,
+            "success": bool(fabric_result.get("composition") and fabric_result.get("is_valid")),
             "ocr": ocr_result,
             "fabric": fabric_result,
             "score": score_result,
             "advice": advice,
+            **public_fields,
         }
     except FileNotFoundError as exc:
         return _error_response(str(exc), status_code=404, code="file_not_found", detail=str(exc))
@@ -571,7 +710,7 @@ async def analyze_label(request: Request) -> object:
         return _error_response(str(exc), status_code=400, code="bad_request", detail=str(exc))
     except Exception as exc:
         return _error_response(
-            "Label analysis failed",
+            "Etiket net okunamadi. Daha yakin ve isikli bir fotograf yukleyin.",
             status_code=500,
             code="label_analysis_failed",
             detail=f"{type(exc).__name__}: {exc}",
@@ -590,11 +729,49 @@ async def analyze_url(request: UrlRequest) -> object:
         from anyio.to_thread import run_sync
         from backend.ocr.fabric_parser import parse_fabric_composition
         from backend.scoring.quality_score import calculate_quality_score
-        from backend.url_parser.extractor import extract_fabric_text
+        extractor = importlib.import_module("backend.url_parser.extractor")
 
-        scraped_text = await run_sync(extract_fabric_text, request.url)
+        if hasattr(extractor, "extract_fabric_data"):
+            extraction = await run_sync(extractor.extract_fabric_data, request.url)
+        else:
+            scraped_text_fallback = await run_sync(extractor.extract_fabric_text, request.url)
+            extraction = {
+                "success": True,
+                "source": "url",
+                "url": request.url,
+                "raw_text": scraped_text_fallback,
+                "fabric_candidates": [],
+                "warnings": [],
+                "error": None,
+            }
+        scraped_text = str(extraction.get("raw_text") or "")
         fabric_result = parse_fabric_composition(scraped_text)
-        score_result = calculate_quality_score(fabric_result["composition"])
+        score_result = _score_if_valid(fabric_result, calculate_quality_score)
+        if not fabric_result.get("composition") or not fabric_result.get("is_valid"):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "success": False,
+                    "ocr": _empty_ocr_result(),
+                    "fabric": fabric_result,
+                    "score": _empty_score_result(),
+                    "advice": URL_FABRIC_NOT_FOUND_MESSAGE,
+                    "source": extraction.get("source") or "url",
+                    "url": request.url,
+                    "raw_text": scraped_text,
+                    "fabric_candidates": extraction.get("fabric_candidates") or [],
+                    "composition": [],
+                    "confidence_score": 0.0,
+                    "confidence_label": "low",
+                    "warnings": [URL_FABRIC_NOT_FOUND_MESSAGE],
+                    "error": "fabric_info_not_found",
+                },
+            )
+        public_fields = _build_public_analysis_fields(
+            source=str(extraction.get("source") or "url"),
+            raw_text=scraped_text,
+            fabric_result=fabric_result,
+        )
 
         return {
             "success": True,
@@ -602,6 +779,10 @@ async def analyze_url(request: UrlRequest) -> object:
             "fabric": fabric_result,
             "score": score_result,
             "advice": None,
+            "url": request.url,
+            "fabric_candidates": extraction.get("fabric_candidates") or [],
+            "error": None,
+            **public_fields,
         }
     except DynamicScraperBlockedError:
         return JSONResponse(
@@ -610,7 +791,7 @@ async def analyze_url(request: UrlRequest) -> object:
                 "success": False,
                 "error": {
                     "code": "site_blocked",
-                    "message": "Page blocked browser-based scraping",
+                    "message": "Bu urun sayfasi otomatik okunamadi. Etiket fotografi ile tekrar deneyebilirsiniz.",
                     "source": "browser",
                 },
             },
@@ -622,7 +803,7 @@ async def analyze_url(request: UrlRequest) -> object:
                 "success": False,
                 "error": {
                     "code": "dynamic_timeout",
-                    "message": "Dynamic page timed out",
+                    "message": "Bu urun sayfasi otomatik okunamadi. Etiket fotografi ile tekrar deneyebilirsiniz.",
                     "detail": str(exc),
                 },
             },
@@ -634,7 +815,7 @@ async def analyze_url(request: UrlRequest) -> object:
                 "success": False,
                 "error": {
                     "code": "no_fabric_text",
-                    "message": "No fabric text found on rendered page",
+                    "message": URL_FABRIC_NOT_FOUND_MESSAGE,
                     "detail": str(exc),
                 },
             },
@@ -646,7 +827,7 @@ async def analyze_url(request: UrlRequest) -> object:
                 "success": False,
                 "error": {
                     "code": "dynamic_runtime_unavailable",
-                    "message": "Dynamic scraper runtime unavailable",
+                    "message": "Bu urun sayfasi otomatik okunamadi. Etiket fotografi ile tekrar deneyebilirsiniz.",
                     "detail": str(exc),
                 },
             },
@@ -659,12 +840,20 @@ async def analyze_url(request: UrlRequest) -> object:
             content={
                 "success": False,
                 "ocr": _empty_ocr_result(),
-                "fabric": _empty_fabric_result(warning="URL analysis failed"),
+                "fabric": _empty_fabric_result(warning=URL_FABRIC_NOT_FOUND_MESSAGE),
                 "score": _empty_score_result(),
-                "advice": None,
+                "advice": URL_FABRIC_NOT_FOUND_MESSAGE,
+                "source": "url",
+                "url": request.url,
+                "raw_text": "",
+                "fabric_candidates": [],
+                "composition": [],
+                "confidence_score": 0.0,
+                "confidence_label": "low",
+                "warnings": [URL_FABRIC_NOT_FOUND_MESSAGE],
                 "error": {
                     "code": "url_analysis_failed",
-                    "message": "URL analysis failed",
+                    "message": "Bu urun sayfasi otomatik okunamadi. Etiket fotografi ile tekrar deneyebilirsiniz.",
                     "type": type(exc).__name__,
                     "module": type(exc).__module__,
                     "detail": repr(exc),

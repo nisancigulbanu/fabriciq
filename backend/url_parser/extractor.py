@@ -15,7 +15,7 @@ from .dynamic import (
     extract_dynamic_text,
 )
 from .selenium_dynamic import extract_selenium_text
-from .static import extract_static_text
+from .static import extract_static_candidates, extract_static_text
 
 
 def _has_parseable_composition(text: str) -> bool:
@@ -38,8 +38,90 @@ def _extract_dynamic_or_raise(url: str) -> str:
         return extract_dynamic_text(url)
 
 
+def _success_result(
+    *,
+    source: str,
+    url: str,
+    raw_text: str,
+    fabric_candidates: list[str],
+) -> dict[str, Any]:
+    """Build a structured URL extraction success payload."""
+    return {
+        "success": True,
+        "source": source,
+        "url": url,
+        "raw_text": raw_text,
+        "fabric_candidates": fabric_candidates,
+        "composition": [],
+        "confidence_score": 0.0,
+        "warnings": [],
+        "error": None,
+    }
+
+
+def _failure_result(url: str, error: str) -> dict[str, Any]:
+    """Build a structured URL extraction failure payload."""
+    return {
+        "success": False,
+        "source": "url",
+        "url": url,
+        "raw_text": "",
+        "fabric_candidates": [],
+        "composition": [],
+        "confidence_score": 0.0,
+        "warnings": [
+            "Bu urun sayfasindan kumas bilgisi otomatik alinamadi. Etiket fotografi yukleyebilirsiniz."
+        ],
+        "error": error,
+    }
+
+
+def extract_fabric_data(url: str) -> dict[str, Any]:
+    """Extract fabric-oriented text from a URL with static-first, browser fallback flow."""
+    try:
+        detection: dict[str, Any] = detect_page_type(url)
+    except requests.RequestException:
+        detection = {"is_dynamic": True}
+
+    if not detection.get("is_dynamic"):
+        try:
+            static_candidates = extract_static_candidates(url)
+            static_text = "\n".join(static_candidates)
+            if _has_parseable_composition(static_text):
+                return _success_result(
+                    source="static_html",
+                    url=url,
+                    raw_text=static_text,
+                    fabric_candidates=static_candidates,
+                )
+        except requests.RequestException:
+            pass
+
+    try:
+        dynamic_text = _extract_dynamic_or_raise(url)
+        return _success_result(
+            source="playwright",
+            url=url,
+            raw_text=dynamic_text,
+            fabric_candidates=[dynamic_text] if dynamic_text else [],
+        )
+    except DynamicScraperNoTextError:
+        return _failure_result(url, "fabric_info_not_found")
+
+
 def extract_fabric_text(url: str) -> str:
     """Extract plain text from a product URL for the shared fabric parser."""
+    extracted = extract_fabric_data(url)
+    if extracted["success"]:
+        return str(extracted["raw_text"])
+    if extracted["error"] == "fabric_info_not_found":
+        raise DynamicScraperNoTextError("No fabric text found.")
+
+    raise DynamicScraperNoTextError(str(extracted["error"]))
+
+
+def _legacy_extract_fabric_text(url: str) -> str:
+    """Previous plain text extraction implementation kept for reference."""
     try:
         detection: dict[str, Any] = detect_page_type(url)
     except requests.RequestException:

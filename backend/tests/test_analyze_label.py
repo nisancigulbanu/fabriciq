@@ -478,7 +478,7 @@ def test_analyze_label_merges_composition_across_ocr_variants(
     response_json = response.json()
     assert response.status_code == 200
     assert response_json["fabric"]["composition"] == [
-        {"fabric": "viskon", "ratio": 83},
+        {"fabric": "viskoz", "ratio": 83},
         {"fabric": "poliamid", "ratio": 15},
         {"fabric": "elastan", "ratio": 2},
     ]
@@ -510,4 +510,6 @@ def test_analyze_url_returns_structured_error_for_unexpected_dynamic_failure(
 
     assert response.status_code == 500
     assert response.json()["success"] is False
-    assert response.json()["error"]["message"] == "URL analysis failed"
+    assert response.json()["error"]["message"] == (
+        "Bu urun sayfasi otomatik okunamadi. Etiket fotografi ile tekrar deneyebilirsiniz."
+    )

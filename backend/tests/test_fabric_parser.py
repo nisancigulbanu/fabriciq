@@ -88,3 +88,83 @@ def test_parser_keeps_small_elastane_ratio_in_ratio_first_text() -> None:
     ]
     assert result["total_ratio"] == 100
     assert result["is_valid"] is True
+
+
+def test_parser_reads_english_ratio_first_composition() -> None:
+    """Parse a common English product composition sentence."""
+    result = parse_fabric_composition("83% viscose 15% polyamide 2% elastane")
+
+    assert result["composition"] == [
+        {"fabric": "viskoz", "ratio": 83},
+        {"fabric": "poliamid", "ratio": 15},
+        {"fabric": "elastan", "ratio": 2},
+    ]
+    assert result["total_ratio"] == 100
+    assert result["confidence_label"] == "high"
+
+
+def test_parser_reads_turkish_prefix_percent_composition() -> None:
+    """Parse Turkish labels where percent appears before the number."""
+    result = parse_fabric_composition("%83 viskoz %15 poliamid %2 elastan")
+
+    assert result["composition"] == [
+        {"fabric": "viskoz", "ratio": 83},
+        {"fabric": "poliamid", "ratio": 15},
+        {"fabric": "elastan", "ratio": 2},
+    ]
+    assert result["total_ratio"] == 100
+    assert result["is_valid"] is True
+
+
+def test_parser_repairs_l_digit_ocr_ratio_noise() -> None:
+    """Repair OCR reading l5 as 15 before a fabric name."""
+    result = parse_fabric_composition("83% viskoz l5 poliamid 2% elastan")
+
+    assert {"fabric": "poliamid", "ratio": 15} in result["composition"]
+    assert result["total_ratio"] == 100
+    assert result["is_valid"] is True
+
+
+def test_parser_normalizes_comma_decimal_total() -> None:
+    """Support decimal comma percentages."""
+    result = parse_fabric_composition("83,5% viscose 14,5% polyamide 2% elastane")
+
+    assert result["composition"] == [
+        {"fabric": "viskoz", "ratio": 83.5},
+        {"fabric": "poliamid", "ratio": 14.5},
+        {"fabric": "elastan", "ratio": 2},
+    ]
+    assert result["total_ratio"] == 100
+    assert result["confidence_label"] == "high"
+
+
+def test_parser_does_not_guess_without_fabric_composition() -> None:
+    """Do not infer fabric from unrelated product text."""
+    result = parse_fabric_composition("Siyah elbise regular fit kampanya fiyat")
+
+    assert result["composition"] == []
+    assert result["total_ratio"] == 0
+    assert result["is_valid"] is False
+    assert result["confidence_score"] == 0.0
+
+
+def test_parser_repairs_noisy_polyester_from_long_label_ocr() -> None:
+    """Parse polyester when long-label OCR distorts polyester heavily."""
+    result = parse_fabric_composition("VEae 1009 68818g8s328isstonef8RE 59REYA Mpalesler-Rera")
+
+    assert result["composition"] == [{"fabric": "polyester", "ratio": 100}]
+    assert result["is_valid"] is True
+    assert result["confidence_label"] == "high"
+
+
+def test_parser_recovers_modal_polyester_from_scrambled_label_ocr() -> None:
+    """Recover 84 modal / 16 polyester when OCR scrambles a multilingual label line."""
+    result = parse_fabric_composition(
+        "16% TonecTenere WABag 8884 ANA ModAE POCFESTER k ReNKLERUE"
+    )
+
+    assert result["composition"] == [
+        {"fabric": "modal", "ratio": 84},
+        {"fabric": "polyester", "ratio": 16},
+    ]
+    assert result["is_valid"] is True

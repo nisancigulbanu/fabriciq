@@ -23,6 +23,12 @@ REMOTE_OCR_URL = os.getenv(
     "https://overcoat-treat-obsession.ngrok-free.dev/ocr",
 ).strip()
 LANGUAGES = ["tr", "en"]
+OCR_ALLOWLIST = (
+    "0123456789"
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "ğüşöçıİĞÜŞÖÇ"
+    "%.,-/ "
+)
 logger = logging.getLogger(__name__)
 _reader: easyocr.Reader | None = None
 
@@ -154,6 +160,7 @@ def run_easyocr(image: np.ndarray) -> dict[str, str | float]:
         text_threshold=0.6,
         low_text=0.3,
         mag_ratio=2.0,
+        allowlist=OCR_ALLOWLIST,
     )
     logger.info("Local EasyOCR returned %s detections.", len(detections))
     return _build_ocr_result(detections)
