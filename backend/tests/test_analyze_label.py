@@ -499,6 +499,37 @@ def test_analyze_url_returns_success_for_static_page(client: TestClient, monkeyp
     assert captured["text_to_parse"] == "60% Cotton 40% Polyester"
 
 
+def test_analyze_url_returns_extracted_price(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Return product price data from the URL extractor."""
+    captured = _install_fake_url_pipeline(monkeypatch, scraped_text="60% Cotton 40% Polyester")
+    fake_extractor = sys.modules["backend.url_parser.extractor"]
+
+    def extract_fabric_data(url: str) -> dict[str, object]:
+        captured["url"] = url
+        return {
+            "success": True,
+            "source": "static_html",
+            "url": url,
+            "raw_text": "60% Cotton 40% Polyester",
+            "fabric_candidates": ["60% Cotton 40% Polyester"],
+            "price": {"amount": 1299.99, "currency": "TRY", "text": "1.299,99 TL", "source": "static_html"},
+            "warnings": [],
+            "error": None,
+        }
+
+    fake_extractor.extract_fabric_data = extract_fabric_data
+
+    response = client.post("/analyze/url", json={"url": "https://example.com/product"})
+
+    assert response.status_code == 200
+    assert response.json()["price"] == {
+        "amount": 1299.99,
+        "currency": "TRY",
+        "text": "1.299,99 TL",
+        "source": "static_html",
+    }
+
+
 def test_analyze_url_returns_structured_error_for_unexpected_dynamic_failure(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

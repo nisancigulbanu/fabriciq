@@ -29,6 +29,7 @@ const naturalRatio = document.querySelector("#naturalRatio");
 const syntheticRatio = document.querySelector("#syntheticRatio");
 const totalRatio = document.querySelector("#totalRatio");
 const resultSource = document.querySelector("#resultSource");
+const priceValue = document.querySelector("#priceValue");
 
 const validityBadge = document.querySelector("#validityBadge");
 const insightBadge = document.querySelector("#insightBadge");
@@ -84,6 +85,7 @@ const translations = {
     syntheticRatioLabel: "Synthetic Fiber Ratio",
     totalRatioLabel: "Total Ratio",
     analysisSourceLabel: "Analysis Source",
+    priceLabel: "Price",
     compositionTitle: "Fabric Composition",
     compositionEmpty: "Material ratios will appear here after the first analysis.",
     scoreReadingTitle: "Score Reading",
@@ -160,6 +162,7 @@ const translations = {
     syntheticRatioLabel: "Sentetik Lif Orani",
     totalRatioLabel: "Toplam Oran",
     analysisSourceLabel: "Analiz Kaynagi",
+    priceLabel: "Fiyat",
     compositionTitle: "Kumas Bilesimi",
     compositionEmpty: "Ilk analizden sonra materyal oranlari burada gorunur.",
     scoreReadingTitle: "Skor Yorumu",
@@ -226,6 +229,35 @@ function sourceKey(sourceLabel) {
 
 function translatedSource(sourceLabel) {
   return t(sourceKey(sourceLabel));
+}
+
+function formatPrice(price) {
+  if (!price) {
+    return "-";
+  }
+
+  if (price.text) {
+    return price.text;
+  }
+
+  if (price.amount == null) {
+    return "-";
+  }
+
+  const amount = Number(price.amount);
+  if (!Number.isFinite(amount)) {
+    return "-";
+  }
+
+  const currency = price.currency || "TRY";
+  try {
+    return new Intl.NumberFormat(activeLanguage === "tr" ? "tr-TR" : "en-US", {
+      style: "currency",
+      currency,
+    }).format(amount);
+  } catch {
+    return `${amount} ${currency}`;
+  }
 }
 
 function updateStaticText() {
@@ -433,6 +465,7 @@ function resetResults() {
   syntheticRatio.textContent = "0%";
   totalRatio.textContent = "0%";
   resultSource.textContent = "-";
+  priceValue.textContent = "-";
   validityBadge.textContent = t("noResult");
   insightBadge.textContent = t("waiting");
   compositionList.innerHTML = `<p class="empty-state">${t("compositionEmpty")}</p>`;
@@ -577,6 +610,7 @@ function renderResult(data, sourceLabel, options = {}) {
   syntheticRatio.textContent = `${score.synthetic_ratio || 0}%`;
   totalRatio.textContent = `${fabric.total_ratio || 0}%`;
   resultSource.textContent = translatedSource(sourceLabel);
+  priceValue.textContent = formatPrice(data.price);
   validityBadge.textContent = fabric.is_valid ? t("validComposition") : t("needsReview");
 
   renderComposition(fabric.composition || []);

@@ -13,9 +13,10 @@ from .dynamic import (
     DynamicScraperTimeoutError,
     DynamicScraperUnavailableError,
     extract_dynamic_text,
+    extract_dynamic_data,
 )
-from .selenium_dynamic import extract_selenium_text
-from .static import extract_static_candidates, extract_static_text
+from .selenium_dynamic import extract_selenium_data, extract_selenium_text
+from .static import extract_static_candidates, extract_static_data, extract_static_text
 
 
 def _has_parseable_composition(text: str) -> bool:
@@ -26,16 +27,21 @@ def _has_parseable_composition(text: str) -> bool:
 
 
 def _extract_dynamic_or_raise(url: str) -> str:
-    """Extract with Selenium first, then Playwright as a secondary browser fallback."""
+    """Extract text with Selenium first, then Playwright as a secondary browser fallback."""
+    return str(_extract_dynamic_data_or_raise(url)["raw_text"])
+
+
+def _extract_dynamic_data_or_raise(url: str) -> dict[str, Any]:
+    """Extract data with Selenium first, then Playwright as a secondary browser fallback."""
     try:
-        return extract_selenium_text(url)
+        return extract_selenium_data(url)
     except (
         DynamicScraperBlockedError,
         DynamicScraperNoTextError,
         DynamicScraperTimeoutError,
         DynamicScraperUnavailableError,
     ):
-        return extract_dynamic_text(url)
+        return extract_dynamic_data(url)
 
 
 def _success_result(
@@ -44,6 +50,7 @@ def _success_result(
     url: str,
     raw_text: str,
     fabric_candidates: list[str],
+    price: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     """Build a structured URL extraction success payload."""
     return {
@@ -52,6 +59,7 @@ def _success_result(
         "url": url,
         "raw_text": raw_text,
         "fabric_candidates": fabric_candidates,
+        "price": price,
         "composition": [],
         "confidence_score": 0.0,
         "warnings": [],
@@ -67,6 +75,7 @@ def _failure_result(url: str, error: str) -> dict[str, Any]:
         "url": url,
         "raw_text": "",
         "fabric_candidates": [],
+        "price": None,
         "composition": [],
         "confidence_score": 0.0,
         "warnings": [
@@ -85,25 +94,29 @@ def extract_fabric_data(url: str) -> dict[str, Any]:
 
     if not detection.get("is_dynamic"):
         try:
-            static_candidates = extract_static_candidates(url)
-            static_text = "\n".join(static_candidates)
+            static_data = extract_static_data(url)
+            static_candidates = list(static_data.get("fabric_candidates") or [])
+            static_text = str(static_data.get("raw_text") or "\n".join(static_candidates))
             if _has_parseable_composition(static_text):
                 return _success_result(
                     source="static_html",
                     url=url,
                     raw_text=static_text,
                     fabric_candidates=static_candidates,
+                    price=static_data.get("price"),  # type: ignore[arg-type]
                 )
         except requests.RequestException:
             pass
 
     try:
-        dynamic_text = _extract_dynamic_or_raise(url)
+        dynamic_data = _extract_dynamic_data_or_raise(url)
+        dynamic_text = str(dynamic_data.get("raw_text") or "")
         return _success_result(
             source="playwright",
             url=url,
             raw_text=dynamic_text,
             fabric_candidates=[dynamic_text] if dynamic_text else [],
+            price=dynamic_data.get("price"),  # type: ignore[arg-type]
         )
     except DynamicScraperNoTextError:
         return _failure_result(url, "fabric_info_not_found")

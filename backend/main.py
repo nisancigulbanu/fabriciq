@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import importlib
+import logging
 import os
 import sys
 import tempfile
@@ -26,6 +27,7 @@ from backend.url_parser.dynamic import (
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
 FRAMES_DIR = BASE_DIR / "forweb01"
+logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="FabricIQ Backend")
 app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
@@ -537,6 +539,10 @@ async def analyze_label(request: Request) -> object:
 
     try:
         from backend.ocr.engine import extract_text_from_image as run_easyocr
+        try:
+            from backend.ocr.engine import run_lmstudio_ocr_from_path
+        except ImportError:
+            run_lmstudio_ocr_from_path = lambda image_path: None
         from backend.ocr.engine_paddle import run_paddleocr
         from backend.ocr.fabric_parser import parse_fabric_composition
         from backend.ocr.preprocessor import preprocess_image_variants
@@ -561,6 +567,31 @@ async def analyze_label(request: Request) -> object:
 
         analysis_started_at = time.perf_counter()
         timed_out = False
+        lmstudio_result = run_lmstudio_ocr_from_path(temp_path)
+        if lmstudio_result is not None:
+            text_to_parse = lmstudio_result["raw_text"] or lmstudio_result["confident_text"]
+            logger.info("Label LM Studio original-image text sent to parser: %s", str(text_to_parse or "")[:500])
+            fabric_result = parse_fabric_composition(str(text_to_parse)) if text_to_parse else _empty_fabric_result(
+                warning="Fabric composition could not be extracted from the provided text."
+            )
+            logger.info(
+                "Label LM Studio parser result: composition_count=%s is_valid=%s total=%s warning=%s",
+                len(fabric_result.get("composition") or []),
+                fabric_result.get("is_valid"),
+                fabric_result.get("total_ratio"),
+                fabric_result.get("warning"),
+            )
+            score_result = _score_if_valid(fabric_result, calculate_quality_score)
+            candidate_results.append(
+                (
+                    _label_candidate_rank(lmstudio_result, fabric_result),
+                    lmstudio_result,
+                    fabric_result,
+                    score_result,
+                )
+            )
+            best_result = candidate_results[-1]
+
         for _, processed_image in preprocess_image_variants(temp_path):
             if best_result is not None and time.perf_counter() - analysis_started_at > LABEL_OCR_TIME_BUDGET_SECONDS:
                 timed_out = True
@@ -577,12 +608,20 @@ async def analyze_label(request: Request) -> object:
 
             for ocr_result in ocr_results:
                 text_to_parse = ocr_result["raw_text"] or ocr_result["confident_text"]
+                logger.info("Label OCR text sent to parser: %s", str(text_to_parse or "")[:500])
                 if text_to_parse:
                     fabric_result = parse_fabric_composition(str(text_to_parse))
                 else:
                     fabric_result = _empty_fabric_result(
                         warning="Fabric composition could not be extracted from the provided text."
                     )
+                logger.info(
+                    "Label parser result: composition_count=%s is_valid=%s total=%s warning=%s",
+                    len(fabric_result.get("composition") or []),
+                    fabric_result.get("is_valid"),
+                    fabric_result.get("total_ratio"),
+                    fabric_result.get("warning"),
+                )
                 score_result = _score_if_valid(fabric_result, calculate_quality_score)
                 candidate = (
                     _label_candidate_rank(ocr_result, fabric_result),
@@ -741,6 +780,7 @@ async def analyze_url(request: UrlRequest) -> object:
                 "url": request.url,
                 "raw_text": scraped_text_fallback,
                 "fabric_candidates": [],
+                "price": None,
                 "warnings": [],
                 "error": None,
             }
@@ -760,6 +800,7 @@ async def analyze_url(request: UrlRequest) -> object:
                     "url": request.url,
                     "raw_text": scraped_text,
                     "fabric_candidates": extraction.get("fabric_candidates") or [],
+                    "price": extraction.get("price"),
                     "composition": [],
                     "confidence_score": 0.0,
                     "confidence_label": "low",
@@ -781,6 +822,7 @@ async def analyze_url(request: UrlRequest) -> object:
             "advice": None,
             "url": request.url,
             "fabric_candidates": extraction.get("fabric_candidates") or [],
+            "price": extraction.get("price"),
             "error": None,
             **public_fields,
         }

@@ -8,7 +8,7 @@ from typing import Any
 from .adapters.inditex import fetch_inditex_composition_text
 from .detector import USER_AGENT
 from .dynamic import DynamicScraperBlockedError, DynamicScraperNoTextError, DynamicScraperUnavailableError
-from .static import _extract_fabric_fragments
+from .static import _extract_fabric_fragments, _extract_price_from_text
 
 
 SELENIUM_WAIT_SECONDS = 5
@@ -115,6 +115,11 @@ def inspect_selenium_page(url: str) -> dict[str, object]:
 
 def extract_selenium_text(url: str) -> str:
     """Render a product page with Selenium Chrome and return fabric-oriented plain text."""
+    return str(extract_selenium_data(url)["raw_text"])
+
+
+def extract_selenium_data(url: str) -> dict[str, object]:
+    """Render a product page with Selenium Chrome and return fabric text plus price."""
     driver = None
     webdriver_error: type[Exception] = Exception
 
@@ -125,19 +130,26 @@ def extract_selenium_text(url: str) -> str:
         time.sleep(SELENIUM_WAIT_SECONDS)
 
         body_text = driver.execute_script("return document.body ? document.body.innerText : ''") or ""
+        price = _extract_price_from_text(body_text, source="selenium")
         lower_body_text = body_text.lower()
         if "access denied" in lower_body_text or "permission to access" in lower_body_text:
             raise DynamicScraperBlockedError("The page blocked Selenium browser scraping.")
 
         inditex_composition_text = fetch_inditex_composition_text(driver)
         if inditex_composition_text:
-            return inditex_composition_text
+            return {
+                "raw_text": inditex_composition_text,
+                "price": price,
+            }
 
         filtered_text = "\n".join(dict.fromkeys(_extract_fabric_fragments(body_text)))
         if not filtered_text:
             raise DynamicScraperNoTextError("Selenium rendered page did not contain fabric-oriented text.")
 
-        return filtered_text
+        return {
+            "raw_text": filtered_text,
+            "price": price,
+        }
     except (DynamicScraperBlockedError, DynamicScraperNoTextError, DynamicScraperUnavailableError):
         raise
     except webdriver_error as exc:

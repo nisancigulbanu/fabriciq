@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .detector import FABRIC_KEYWORDS, USER_AGENT
-from .static import _extract_fabric_fragments
+from .static import _extract_fabric_fragments, _extract_price_from_text
 
 
 DYNAMIC_TIMEOUT_MS = 20000
@@ -97,6 +97,16 @@ def _extract_visible_text(page: object) -> str:
     return filtered_text
 
 
+def _extract_visible_data(page: object) -> dict[str, object]:
+    """Extract fabric-oriented text and a likely product price from a rendered page."""
+    body_text = page.locator("body").inner_text(timeout=3000)
+    price = _extract_price_from_text(body_text, source="playwright")
+    return {
+        "raw_text": _extract_visible_text(page),
+        "price": price,
+    }
+
+
 def _dismiss_popups(page: object) -> None:
     """Best-effort close cookie, campaign, and modal popups."""
     for selector in POPUP_DISMISS_SELECTORS:
@@ -119,6 +129,11 @@ def _wait_for_product_hints(page: object, playwright_timeout_error: type[Excepti
 
 def extract_dynamic_text(url: str) -> str:
     """Render a JavaScript-heavy product page and return plain text for fabric parsing."""
+    return str(extract_dynamic_data(url)["raw_text"])
+
+
+def extract_dynamic_data(url: str) -> dict[str, object]:
+    """Render a JavaScript-heavy product page and return fabric text plus price."""
     sync_playwright, playwright_error, playwright_timeout_error = _import_playwright()
 
     try:
@@ -143,7 +158,7 @@ def extract_dynamic_text(url: str) -> str:
                     pass
                 _dismiss_popups(page)
                 _wait_for_product_hints(page, playwright_timeout_error)
-                return _extract_visible_text(page)
+                return _extract_visible_data(page)
             finally:
                 if context is not None:
                     context.close()
