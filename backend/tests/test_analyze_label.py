@@ -202,13 +202,26 @@ def _install_fake_url_pipeline(
 
     fake_scorer = types.ModuleType("scoring.quality_score")
 
-    def calculate_quality_score(composition: list[dict[str, int | str]]) -> dict[str, int | str]:
+    def calculate_quality_score(
+        composition: list[dict[str, int | str]],
+        product_context: str | None = None,
+    ) -> dict[str, object]:
         captured["composition"] = composition
+        captured["product_context"] = product_context
         return {
             "quality_score": 53,
             "grade": "F",
             "natural_ratio": 60,
             "synthetic_ratio": 40,
+            "scoring_notes": [],
+            "score_details": {
+                "performance_score": 53.0,
+                "sustainability_score": 53.0,
+                "final_score": 53.0,
+                "category": "Düşük",
+                "product_type": "general",
+                "formula_version": "kp_sp_v1",
+            },
         }
 
     fake_scorer.calculate_quality_score = calculate_quality_score
@@ -553,6 +566,28 @@ def test_analyze_url_returns_success_for_static_page(client: TestClient, monkeyp
     assert response_json["fabric"]["composition"]
     assert captured["url"] == "https://example.com/product"
     assert captured["text_to_parse"] == "60% Cotton 40% Polyester"
+    assert "https://example.com/product" in str(captured["product_context"])
+
+
+def test_analyze_url_uses_selected_product_type_override(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use explicit URL product_type when the user overrides automatic context detection."""
+    captured = _install_fake_url_pipeline(monkeypatch, scraped_text="60% Cotton 40% Polyester")
+
+    response = client.post(
+        "/analyze/url",
+        json={
+            "url": "https://example.com/polo-tisort",
+            "product_type": "activewear",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["product_type"] == "activewear"
+    assert str(captured["product_context"]).startswith("activewear ")
+    assert "https://example.com/polo-tisort" not in str(captured["product_context"])
 
 
 def test_analyze_url_returns_extracted_price(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

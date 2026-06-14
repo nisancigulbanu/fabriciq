@@ -85,6 +85,20 @@ def test_baby_zibin_url_slug_scores_as_baby_kids_before_tshirt() -> None:
     assert result["score_details"]["product_type"] == "baby_kids"
 
 
+def test_url_slug_product_hint_beats_generic_page_body_terms() -> None:
+    """Treat the URL product hint as stronger than broad page body category text."""
+    result = calculate_quality_score(
+        [{"fabric": "polyester", "ratio": 82}, {"fabric": "elastan", "ratio": 18}],
+        product_context=(
+            "url_product_hint siyah-mayo-bikini-yuzme\n"
+            "https://example.com/siyah-mayo-bikini-yuzme\n"
+            "tshirt underwear ic giyim"
+        ),
+    )
+
+    assert result["score_details"]["product_type"] == "swimwear"
+
+
 def test_polyester_scores_low_for_knitwear_and_better_for_outerwear() -> None:
     """Score the same fiber differently by product context."""
     knitwear = calculate_quality_score(
@@ -121,3 +135,18 @@ def test_unknown_fabric_adds_note_without_breaking_score() -> None:
 
     assert result["quality_score"] > 0
     assert any("Tanınmayan lifler" in note for note in result["scoring_notes"])
+
+
+def test_mojibake_wool_aliases_normalize_to_wool() -> None:
+    """Keep legacy mojibake OCR/scraper wool text scoring as real wool."""
+    mojibake_wool = "y" + chr(195) + chr(188) + "n"
+    double_mojibake_wool = "y" + chr(195) + chr(131) + chr(194) + chr(188) + "n"
+
+    for fabric in ("yün", mojibake_wool, double_mojibake_wool, "yun"):
+        result = calculate_quality_score(
+            [{"fabric": fabric, "ratio": 100}],
+            product_context="knitwear",
+        )
+
+        assert result["quality_score"] == 86
+        assert result["score_details"]["category"] == "Mükemmel"

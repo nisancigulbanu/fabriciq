@@ -9,6 +9,7 @@ const labelModeButton = document.querySelector("#labelModeButton");
 const urlForm = document.querySelector("#urlForm");
 const labelForm = document.querySelector("#labelForm");
 const urlInput = document.querySelector("#productUrl");
+const urlProductType = document.querySelector("#urlProductType");
 const labelInput = document.querySelector("#labelFile");
 const labelProductType = document.querySelector("#labelProductType");
 const urlButton = document.querySelector("#urlButton");
@@ -87,6 +88,7 @@ const translations = {
     labelFormTitle: "Label OCR Analysis",
     labelFormCopy: "Upload a clear label image to read fabric ratios with OCR before scoring.",
     labelButton: "Analyze Image",
+    urlProductTypeAuto: "Auto-detect product type",
     productTypeGeneral: "General / Everyday",
     productTypeActivewear: "Leggings / Activewear",
     productTypeKnitwear: "Sweater / Knitwear",
@@ -192,6 +194,7 @@ const translations = {
     labelFormTitle: "Etiket OCR Analizi",
     labelFormCopy: "Kumas oranlarini okumak ve skorlamak icin net bir etiket fotografi yukle.",
     labelButton: "Gorseli Analiz Et",
+    urlProductTypeAuto: "Urun tipini otomatik algila",
     productTypeGeneral: "Genel / Gunluk",
     productTypeActivewear: "Tayt / Activewear",
     productTypeKnitwear: "Kazak / Triko",
@@ -975,7 +978,10 @@ urlForm.addEventListener("submit", async (event) => {
     const response = await fetch("/analyze/url", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: urlInput.value.trim() }),
+      body: JSON.stringify({
+        url: urlInput.value.trim(),
+        product_type: urlProductType.value || "general",
+      }),
     });
     const payload = await response.json();
 

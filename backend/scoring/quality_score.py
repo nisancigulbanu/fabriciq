@@ -31,7 +31,6 @@ KP_BASE: dict[str, int] = {
     "elastan": 85,
     "yun": 80,
     "yün": 80,
-    "yÃ¼n": 80,
     "kenevir": 75,
     "polipropilen": 48,
 }
@@ -47,7 +46,6 @@ SP_BASE: dict[str, int] = {
     "bambu_viskon": 62,
     "yun": 60,
     "yün": 60,
-    "yÃ¼n": 60,
     "kenevir": 68,
     "ipek": 65,
     "pamuk": 48,
@@ -70,7 +68,6 @@ NATURAL_FABRICS = {
     "merino_yun",
     "yun",
     "yün",
-    "yÃ¼n",
     "keten",
     "pamuk",
     "uzun_elyaf_pamuk",
@@ -104,7 +101,6 @@ PRODUCT_COEFFICIENTS: dict[str, dict[str, float]] = {
         "elastan": 1.30,
         "yun": 0.60,
         "yün": 0.60,
-        "yÃ¼n": 0.60,
         "lyocell": 0.80,
         "viskon": 0.60,
         "viskoz": 0.60,
@@ -118,7 +114,6 @@ PRODUCT_COEFFICIENTS: dict[str, dict[str, float]] = {
         "elastan": 0.40,
         "yun": 1.30,
         "yün": 1.30,
-        "yÃ¼n": 1.30,
         "merino_yun": 1.30,
         "kasmir": 1.25,
         "lyocell": 0.85,
@@ -135,7 +130,6 @@ PRODUCT_COEFFICIENTS: dict[str, dict[str, float]] = {
         "elastan": 0.70,
         "yun": 0.85,
         "yün": 0.85,
-        "yÃ¼n": 0.85,
         "lyocell": 1.10,
         "modal": 1.10,
         "viskon": 0.95,
@@ -150,7 +144,6 @@ PRODUCT_COEFFICIENTS: dict[str, dict[str, float]] = {
         "elastan": 0.65,
         "yun": 0.90,
         "yün": 0.90,
-        "yÃ¼n": 0.90,
         "lyocell": 1.15,
         "viskon": 1.10,
         "viskoz": 1.10,
@@ -165,7 +158,6 @@ PRODUCT_COEFFICIENTS: dict[str, dict[str, float]] = {
         "elastan": 0.75,
         "yun": 0.50,
         "yün": 0.50,
-        "yÃ¼n": 0.50,
         "lyocell": 0.70,
         "viskon": 0.65,
         "viskoz": 0.65,
@@ -180,7 +172,6 @@ PRODUCT_COEFFICIENTS: dict[str, dict[str, float]] = {
         "elastan": 0.50,
         "yun": 1.05,
         "yün": 1.05,
-        "yÃ¼n": 1.05,
         "lyocell": 0.80,
         "viskon": 0.70,
         "viskoz": 0.70,
@@ -195,7 +186,6 @@ PRODUCT_COEFFICIENTS: dict[str, dict[str, float]] = {
         "elastan": 1.30,
         "yun": 0.30,
         "yün": 0.30,
-        "yÃ¼n": 0.30,
         "lyocell": 0.50,
         "viskon": 0.40,
         "viskoz": 0.40,
@@ -209,7 +199,6 @@ PRODUCT_COEFFICIENTS: dict[str, dict[str, float]] = {
         "elastan": 0.90,
         "yun": 1.20,
         "yün": 1.20,
-        "yÃ¼n": 1.20,
         "merino_yun": 1.25,
         "lyocell": 0.70,
         "viskon": 0.65,
@@ -224,7 +213,6 @@ PRODUCT_COEFFICIENTS: dict[str, dict[str, float]] = {
         "elastan": 0.60,
         "yun": 1.10,
         "yün": 1.10,
-        "yÃ¼n": 1.10,
         "lyocell": 1.10,
         "viskon": 1.00,
         "viskoz": 1.00,
@@ -239,7 +227,6 @@ PRODUCT_COEFFICIENTS: dict[str, dict[str, float]] = {
         "elastan": 0.65,
         "yun": 1.00,
         "yün": 1.00,
-        "yÃ¼n": 1.00,
         "lyocell": 1.15,
         "viskon": 0.75,
         "viskoz": 0.75,
@@ -253,7 +240,6 @@ PRODUCT_COEFFICIENTS: dict[str, dict[str, float]] = {
         "elastan": 0.40,
         "yun": 0.90,
         "yün": 0.90,
-        "yÃ¼n": 0.90,
         "lyocell": 1.10,
         "viskon": 0.95,
         "viskoz": 0.95,
@@ -315,6 +301,20 @@ PRODUCT_TYPE_ALIASES = {
     "baby": "baby_kids",
 }
 
+PRODUCT_TYPE_PRIORITY = (
+    "baby_kids",
+    "tshirt_underwear",
+    "shirt_blouse",
+    "denim",
+    "knitwear",
+    "outerwear",
+    "swimwear",
+    "socks",
+    "officewear",
+    "home_textile",
+    "activewear",
+)
+
 
 def _grade_for_score(score: float) -> str:
     """Map a numeric score to a letter grade."""
@@ -345,6 +345,12 @@ def _category_for_score(score: float) -> str:
 def _normalize_fabric(fabric: str) -> str:
     """Normalize parser output and common aliases to scoring keys."""
     normalized = fabric.strip().lower()
+    if normalized in {
+        "y" + chr(227) + chr(188) + "n",
+        "y" + chr(227) + chr(131) + chr(194) + chr(188) + "n",
+        "y" + chr(227) + chr(131) + chr(226) + chr(188) + "n",
+    }:
+        return "yün"
     alias_map = {
         "nylon": "naylon",
         "polyamide": "poliamid",
@@ -370,6 +376,15 @@ def _tokens(text: str) -> set[str]:
     return set(re.findall(r"[a-zA-ZğüşöçıİĞÜŞÖÇ]+", normalized))
 
 
+def _product_type_from_tokens(context_tokens: set[str]) -> str | None:
+    """Return the first product type matching a token set."""
+    for product_type in PRODUCT_TYPE_PRIORITY:
+        keywords = PRODUCT_TYPE_KEYWORDS[product_type]
+        if context_tokens & keywords:
+            return product_type
+    return None
+
+
 def _normalize_product_type(product_context: str | None) -> str:
     """Infer or normalize a product type from explicit type or free text."""
     context = (product_context or "").strip().lower()
@@ -380,25 +395,14 @@ def _normalize_product_type(product_context: str | None) -> str:
     if context in PRODUCT_TYPE_ALIASES:
         return PRODUCT_TYPE_ALIASES[context]
 
+    if context.startswith("url_product_hint "):
+        primary_context = context.splitlines()[0]
+        primary_product_type = _product_type_from_tokens(_tokens(primary_context))
+        if primary_product_type:
+            return primary_product_type
+
     context_tokens = _tokens(context)
-    product_type_priority = (
-        "baby_kids",
-        "tshirt_underwear",
-        "shirt_blouse",
-        "denim",
-        "knitwear",
-        "outerwear",
-        "swimwear",
-        "socks",
-        "officewear",
-        "home_textile",
-        "activewear",
-    )
-    for product_type in product_type_priority:
-        keywords = PRODUCT_TYPE_KEYWORDS[product_type]
-        if context_tokens & keywords:
-            return product_type
-    return "general"
+    return _product_type_from_tokens(context_tokens) or "general"
 
 
 def _composition_ratio(composition: list[dict[str, int | float | str]], fabric_names: set[str]) -> float:

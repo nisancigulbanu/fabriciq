@@ -56,6 +56,8 @@ GEMINI_MAX_OUTPUT_TOKENS=4096
 GEMINI_THINKING_BUDGET=0
 ```
 
+Gemini is not called automatically during URL or label analysis. The web UI sends an assistant request only when the user clicks the recommendation button or submits a question. If the Gemini API key is missing or the provider returns an unusable response, FabricIQ falls back to the deterministic local recommendation logic.
+
 Open API docs:
 
 ```text
@@ -113,9 +115,12 @@ Request body:
 
 ```json
 {
-  "url": "https://www.koton.com/uzun-kollu-bisiklet-yaka-viskon-triko-kazak-sari-4166045-2/"
+  "url": "https://www.koton.com/uzun-kollu-bisiklet-yaka-viskon-triko-kazak-sari-4166045-2/",
+  "product_type": "general"
 }
 ```
+
+`product_type` is optional. Use `general` or omit it to let FabricIQ infer context from the URL and scraped product text. Send one of the supported product types to override automatic URL context detection.
 
 Example response:
 
@@ -165,6 +170,8 @@ final_score = 0.6 * performance_score + 0.4 * sustainability_score
 
 The legacy `quality_score` and `grade` fields are preserved for clients, while `score_details` exposes the underlying performance, sustainability, category, product type, and formula version.
 
+For URL analysis, product context is inferred from the URL slug, URL text, and scraped product-page text unless the request includes an explicit `product_type`. Explicit baby/kids signals such as `bebek` and `zibin` are prioritized over generic t-shirt or underwear terms during automatic detection.
+
 Dynamic pages are handled with Selenium first and Playwright as a fallback. Some stores may still block browser-based scraping at the edge/CDN layer. Current blocked response:
 
 ```json
@@ -195,13 +202,13 @@ These endpoints are for local development only:
 ## Testing
 
 ```powershell
-pytest backend\tests\test_quality_score.py backend\tests\test_analyze_label.py
+pytest backend\tests\test_quality_score.py backend\tests\test_analyze_label.py backend\tests\test_fabric_parser.py
 ```
 
 Current verified status:
 
 ```text
-23 passed
+41 passed
 ```
 
 ## Next Work

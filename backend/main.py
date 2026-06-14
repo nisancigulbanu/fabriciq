@@ -85,6 +85,7 @@ class UrlRequest(BaseModel):
     """Request body for URL-based product analysis."""
 
     url: str
+    product_type: str | None = None
 
 
 class AssistantRequest(BaseModel):
@@ -1267,7 +1268,12 @@ async def analyze_url(request: UrlRequest) -> object:
             }
         scraped_text = str(extraction.get("raw_text") or "")
         fabric_result = parse_fabric_composition(scraped_text)
-        score_context = _url_product_context(request.url, scraped_text)
+        product_type = _normalize_product_type(request.product_type)
+        score_context = (
+            _label_product_context(product_type)
+            if product_type != "general"
+            else _url_product_context(request.url, scraped_text)
+        )
         score_result = _score_if_valid(
             fabric_result,
             calculate_quality_score,
@@ -1284,6 +1290,7 @@ async def analyze_url(request: UrlRequest) -> object:
                     "advice": URL_FABRIC_NOT_FOUND_MESSAGE,
                     "source": extraction.get("source") or "url",
                     "url": request.url,
+                    "product_type": product_type,
                     "raw_text": scraped_text,
                     "fabric_candidates": extraction.get("fabric_candidates") or [],
                     "price": extraction.get("price"),
@@ -1307,6 +1314,7 @@ async def analyze_url(request: UrlRequest) -> object:
             "score": score_result,
             "advice": None,
             "url": request.url,
+            "product_type": product_type,
             "fabric_candidates": extraction.get("fabric_candidates") or [],
             "price": extraction.get("price"),
             "error": None,

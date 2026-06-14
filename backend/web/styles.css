@@ -372,7 +372,7 @@ p {
 
 .input-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(170px, 0.36fr) minmax(220px, 1fr) auto;
   gap: 14px;
 }
 
