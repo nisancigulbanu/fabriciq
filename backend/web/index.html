@@ -70,10 +70,17 @@
                 <div class="upload-stack">
                   <select id="labelProductType" name="product_type" aria-label="Product type">
                     <option value="general" data-i18n="productTypeGeneral">Genel / Günlük</option>
-                    <option value="activewear" data-i18n="productTypeActivewear">Spor / Performans</option>
-                    <option value="winter" data-i18n="productTypeWinter">Kışlık / Sıcak Tutma</option>
-                    <option value="underwear" data-i18n="productTypeUnderwear">İç Giyim</option>
+                    <option value="activewear" data-i18n="productTypeActivewear">Tayt / Activewear</option>
+                    <option value="knitwear" data-i18n="productTypeKnitwear">Kazak / Triko</option>
+                    <option value="tshirt_underwear" data-i18n="productTypeTshirtUnderwear">T-Shirt / İç Giyim</option>
+                    <option value="shirt_blouse" data-i18n="productTypeShirtBlouse">Gömlek / Bluz</option>
+                    <option value="denim" data-i18n="productTypeDenim">Kot / Denim</option>
                     <option value="outerwear" data-i18n="productTypeOuterwear">Dış Giyim</option>
+                    <option value="swimwear" data-i18n="productTypeSwimwear">Mayo / Yüzme</option>
+                    <option value="socks" data-i18n="productTypeSocks">Çorap</option>
+                    <option value="officewear" data-i18n="productTypeOfficewear">İş / Ofis</option>
+                    <option value="baby_kids" data-i18n="productTypeBabyKids">Bebek / Çocuk</option>
+                    <option value="home_textile" data-i18n="productTypeHomeTextile">Ev Tekstili</option>
                   </select>
                   <input id="labelFile" name="file" type="file" accept="image/*" required />
                   <div class="upload-meta">
@@ -115,6 +122,24 @@
                 <p class="panel-label" data-i18n="qualityScoreLabel">Quality Score</p>
                 <h2 id="gradeValue">Pending</h2>
                 <p id="scoreNote" data-i18n="scoreNoteEmpty">Run a product URL or label analysis to reveal the scoring summary.</p>
+                <div class="score-breakdown" aria-label="Score breakdown">
+                  <div>
+                    <span data-i18n="performanceScoreLabel">Performance / Quality</span>
+                    <strong id="performanceScoreValue">-</strong>
+                  </div>
+                  <div>
+                    <span data-i18n="sustainabilityScoreLabel">Sustainability</span>
+                    <strong id="sustainabilityScoreValue">-</strong>
+                  </div>
+                  <div>
+                    <span data-i18n="finalScoreLabel">Final</span>
+                    <strong id="finalScoreValue">-</strong>
+                  </div>
+                  <div>
+                    <span data-i18n="breakdownGradeLabel">Grade</span>
+                    <strong id="breakdownGradeValue">-</strong>
+                  </div>
+                </div>
               </div>
             </div>
 

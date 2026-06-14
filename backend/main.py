@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import importlib.util
 import importlib
+import inspect
 import json
 import logging
 import os
 import sys
 import tempfile
 import time
+from urllib.parse import unquote, urlparse
 from email import policy
 from email.parser import BytesParser
 from logging.handlers import RotatingFileHandler
@@ -96,6 +98,7 @@ class AssistantRequest(BaseModel):
     natural_ratio: float | None = None
     synthetic_ratio: float | None = None
     scoring_notes: list[str] | None = None
+    score_details: dict[str, object] | None = None
     rag_database_notes: str | list[str] | None = None
     question: str | None = None
     model: str | None = None
@@ -120,6 +123,31 @@ FABRIC_RAG_KNOWLEDGE = {
 }
 
 GEMINI_DEFAULT_MODEL = "gemini-3-flash-preview"
+PRODUCT_TYPE_CONTEXTS = {
+    "general": None,
+    "activewear": "activewear spor performans tayt yoga leggings fitness koşu",
+    "knitwear": "knitwear kışlık kazak triko hırka sıcak tutma wool knitwear",
+    "tshirt_underwear": "tshirt_underwear tişört t-shirt iç giyim underwear atlet cilt konfor",
+    "shirt_blouse": "shirt_blouse gömlek bluz shirt blouse döküm nefes alabilirlik",
+    "denim": "denim kot jean jeans dayanıklılık",
+    "outerwear": "outerwear dış giyim mont ceket kaban su rüzgar dayanıklılık",
+    "swimwear": "swimwear mayo bikini yüzme klor tuz suyu esneklik",
+    "socks": "socks çorap nem yönetimi sürtünme dayanımı",
+    "officewear": "officewear ofis iş kıyafeti takım business",
+    "baby_kids": "baby_kids bebek çocuk hassas cilt hipoalerjenik",
+    "home_textile": "home_textile ev tekstili çarşaf nevresim",
+}
+PRODUCT_TYPE_ALIASES = {
+    "winter": "knitwear",
+    "underwear": "tshirt_underwear",
+    "tshirt": "tshirt_underwear",
+    "shirt": "shirt_blouse",
+    "blouse": "shirt_blouse",
+    "swim": "swimwear",
+    "sock": "socks",
+    "kids": "baby_kids",
+    "baby": "baby_kids",
+}
 
 
 FABRIC_DEBUG_KEYWORDS = (
@@ -182,7 +210,7 @@ def _empty_fabric_result(warning: str | None = None) -> dict[str, object]:
     }
 
 
-def _empty_score_result() -> dict[str, int | str | list[str]]:
+def _empty_score_result() -> dict[str, object]:
     """Return an empty score payload."""
     return {
         "quality_score": 0,
@@ -190,6 +218,14 @@ def _empty_score_result() -> dict[str, int | str | list[str]]:
         "natural_ratio": 0,
         "synthetic_ratio": 0,
         "scoring_notes": [],
+        "score_details": {
+            "performance_score": 0.0,
+            "sustainability_score": 0.0,
+            "final_score": 0.0,
+            "category": "Yetersiz",
+            "product_type": "general",
+            "formula_version": "kp_sp_v1",
+        },
     }
 
 
@@ -284,16 +320,24 @@ def _extract_uploaded_file(request_body: bytes, content_type: str) -> tuple[str,
 
 def _label_product_context(product_type: str | None) -> str | None:
     """Return scorer context for label OCR based on the selected product type."""
+    return PRODUCT_TYPE_CONTEXTS[_normalize_product_type(product_type)]
+
+
+def _normalize_product_type(product_type: str | None) -> str:
+    """Return a supported product type, falling back to general."""
     product_type_value = (product_type or "").strip().lower()
-    if not product_type_value or product_type_value == "general":
-        return None
-    context_by_type = {
-        "activewear": "spor performans tayt yoga leggings fitness koşu activewear",
-        "winter": "kışlık mont kazak hırka sıcak tutma winter wool knitwear",
-        "underwear": "iç giyim underwear hassas cilt esneklik konfor",
-        "outerwear": "dış giyim mont ceket kaban outerwear dayanıklılık",
-    }
-    return context_by_type.get(product_type_value, product_type_value)
+    product_type_value = PRODUCT_TYPE_ALIASES.get(product_type_value, product_type_value)
+    if product_type_value in PRODUCT_TYPE_CONTEXTS:
+        return product_type_value
+    return "general"
+
+
+def _url_product_context(url: str, scraped_text: str) -> str:
+    """Put URL slug first so product-title hints beat page chrome text."""
+    parsed = urlparse(url)
+    slug_text = " ".join(part for part in parsed.path.split("/") if part)
+    slug_text = unquote(slug_text).replace("-", " ").replace("_", " ")
+    return f"url_product_hint {slug_text}\n{url}\n{scraped_text}"
 
 
 def _debug_relevant_lines(text: str) -> list[str]:
@@ -357,17 +401,23 @@ def _score_if_valid(
     fabric_result: dict[str, object],
     calculate_quality_score: object,
     product_context: str | None = None,
-) -> dict[str, int | str | list[str]]:
+) -> dict[str, object]:
     """Calculate quality only for trusted fabric compositions."""
     if not fabric_result.get("is_valid") or not fabric_result.get("composition"):
         return _empty_score_result()
-    try:
+
+    signature = inspect.signature(calculate_quality_score)  # type: ignore[arg-type]
+    accepts_context = (
+        "product_context" in signature.parameters
+        or any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+    )
+    if accepts_context:
         return calculate_quality_score(  # type: ignore[operator]
             fabric_result["composition"],
             product_context=product_context,
         )
-    except TypeError:
-        return calculate_quality_score(fabric_result["composition"])  # type: ignore[operator]
+
+    return calculate_quality_score(fabric_result["composition"])  # type: ignore[operator]
 
 
 def _build_public_analysis_fields(
@@ -494,6 +544,7 @@ def _assistant_system_prompt() -> str:
         "- Veri eksikse tahmin yapma. Eksik bilgiyi açıkça belirt ve sadece mevcut veriyle analiz yap.\n\n"
         "3. FİYAT/PERFORMANS ANALİZİ:\n"
         "- Ürünün fiyatını sistemin atadığı Kalite Skoru ile karşılaştır.\n"
+        "- Skor Detayları verilirse performans puanı (KP), sürdürülebilirlik puanı (SP) ve nihai puanı birlikte yorumla.\n"
         "- Kumaş içeriği ucuz materyallerden oluştuğu halde fiyat yüksekse kullanıcıyı nazikçe marka primi konusunda uyar.\n"
         "- Fiyatına göre iyi doğal lif dengesi sunuyorsa bunu fırsat veya mantıklı tercih olarak vurgula.\n\n"
         "4. ÇIKTI FORMATI:\n"
@@ -514,6 +565,7 @@ def _assistant_user_prompt(request: AssistantRequest, rag_context: list[str]) ->
         "Kalite Skoru": request.quality_score,
         "Kalite Notu": request.grade,
         "Skor Notları": request.scoring_notes or [],
+        "Skor Detayları": request.score_details or {},
         "Doğal/Sentetik Oranı": {
             "doğal": request.natural_ratio,
             "sentetik": request.synthetic_ratio,
@@ -528,6 +580,45 @@ def _assistant_user_prompt(request: AssistantRequest, rag_context: list[str]) ->
         "Eksik alanlar için tahmin yapma.\n"
         f"{json.dumps(user_payload, ensure_ascii=False)}"
     )
+
+
+def _int_env(name: str, default: int) -> int:
+    """Return an integer env var with a safe default."""
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        logger.warning("Invalid integer environment value for %s; using %s.", name, default)
+        return default
+
+
+def _gemini_generation_config(*, include_thinking_config: bool = True) -> dict[str, object]:
+    """Return Gemini generation config with optional thinking controls."""
+    config: dict[str, object] = {
+        "temperature": 0.35,
+        "maxOutputTokens": _int_env("GEMINI_MAX_OUTPUT_TOKENS", 4096),
+    }
+    if include_thinking_config:
+        config["thinkingConfig"] = {
+            "thinkingBudget": _int_env("GEMINI_THINKING_BUDGET", 0),
+        }
+    return config
+
+
+def _gemini_body(system_prompt: str, user_prompt: str, *, include_thinking_config: bool = True) -> dict[str, object]:
+    """Build the Gemini API request body."""
+    return {
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+        "generationConfig": _gemini_generation_config(include_thinking_config=include_thinking_config),
+    }
+
+
+def _should_retry_without_thinking_config(response: requests.Response) -> bool:
+    """Return true when Gemini rejects thinkingConfig."""
+    if response.status_code != 400:
+        return False
+    response_text = response.text.lower()
+    return "thinkingconfig" in response_text or "thinkingbudget" in response_text
 
 
 def _call_gemini_recommendation(request: AssistantRequest, rag_context: list[str]) -> tuple[str, str]:
@@ -551,19 +642,20 @@ def _call_gemini_recommendation(request: AssistantRequest, rag_context: list[str
             "Content-Type": "application/json",
             "x-goog-api-key": api_key,
         },
-        json={
-            "systemInstruction": {"parts": [{"text": system_prompt}]},
-            "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-            "generationConfig": {
-                "temperature": 0.35,
-                "maxOutputTokens": int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "4096")),
-                "thinkingConfig": {
-                    "thinkingBudget": int(os.getenv("GEMINI_THINKING_BUDGET", "0")),
-                },
-            },
-        },
+        json=_gemini_body(system_prompt, user_prompt),
         timeout=timeout,
     )
+    if _should_retry_without_thinking_config(response):
+        logger.warning("Gemini rejected thinkingConfig; retrying without thinkingConfig.")
+        response = requests.post(
+            endpoint,
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key,
+            },
+            json=_gemini_body(system_prompt, user_prompt, include_thinking_config=False),
+            timeout=timeout,
+        )
     response.raise_for_status()
     payload = response.json()
     candidates = payload.get("candidates") or []
@@ -795,7 +887,7 @@ async def debug_label_ocr(request: Request) -> object:
     content_type = request.headers.get("content-type", "")
     request_body = await request.body()
     uploaded_file, form_fields = _extract_multipart_upload(request_body, content_type)
-    product_type = form_fields.get("product_type") or "general"
+    product_type = _normalize_product_type(form_fields.get("product_type"))
     product_context = _label_product_context(product_type)
 
     if uploaded_file is None:
@@ -845,6 +937,7 @@ async def debug_label_ocr(request: Request) -> object:
 
         return {
             "success": True,
+            "product_type": product_type,
             "variant_count": len(variants),
             "best_variant": sorted_variants[0] if sorted_variants else None,
             "variants": variants,
@@ -912,7 +1005,7 @@ async def analyze_label(request: Request) -> object:
     content_type = request.headers.get("content-type", "")
     request_body = await request.body()
     uploaded_file, form_fields = _extract_multipart_upload(request_body, content_type)
-    product_type = form_fields.get("product_type") or "general"
+    product_type = _normalize_product_type(form_fields.get("product_type"))
     product_context = _label_product_context(product_type)
 
     if uploaded_file is None:
@@ -937,14 +1030,14 @@ async def analyze_label(request: Request) -> object:
             tuple[int, int, float, float, int],
             dict[str, str | float],
             dict[str, object],
-            dict[str, int | str],
+            dict[str, object],
         ] | None = None
         candidate_results: list[
             tuple[
                 tuple[int, int, float, float, int],
                 dict[str, str | float],
                 dict[str, object],
-                dict[str, int | str],
+                dict[str, object],
             ]
         ] = []
 
@@ -1174,7 +1267,7 @@ async def analyze_url(request: UrlRequest) -> object:
             }
         scraped_text = str(extraction.get("raw_text") or "")
         fabric_result = parse_fabric_composition(scraped_text)
-        score_context = f"{request.url}\n{scraped_text}"
+        score_context = _url_product_context(request.url, scraped_text)
         score_result = _score_if_valid(
             fabric_result,
             calculate_quality_score,

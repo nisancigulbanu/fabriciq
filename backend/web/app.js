@@ -26,6 +26,10 @@ const scoreRing = document.querySelector("#scoreRing");
 const scoreValue = document.querySelector("#scoreValue");
 const gradeValue = document.querySelector("#gradeValue");
 const scoreNote = document.querySelector("#scoreNote");
+const performanceScoreValue = document.querySelector("#performanceScoreValue");
+const sustainabilityScoreValue = document.querySelector("#sustainabilityScoreValue");
+const finalScoreValue = document.querySelector("#finalScoreValue");
+const breakdownGradeValue = document.querySelector("#breakdownGradeValue");
 const naturalRatio = document.querySelector("#naturalRatio");
 const syntheticRatio = document.querySelector("#syntheticRatio");
 const totalRatio = document.querySelector("#totalRatio");
@@ -53,6 +57,8 @@ let currentSequenceFrame = -1;
 let sequenceFrameRequest = 0;
 let latestResult = null;
 let latestSourceLabel = "";
+let assistantRequestId = 0;
+let assistantAbortController = null;
 
 const fabricLabels = {
   pamuk: "Pamuk",
@@ -82,10 +88,17 @@ const translations = {
     labelFormCopy: "Upload a clear label image to read fabric ratios with OCR before scoring.",
     labelButton: "Analyze Image",
     productTypeGeneral: "General / Everyday",
-    productTypeActivewear: "Sport / Performance",
-    productTypeWinter: "Winter / Warmth",
-    productTypeUnderwear: "Underwear",
+    productTypeActivewear: "Leggings / Activewear",
+    productTypeKnitwear: "Sweater / Knitwear",
+    productTypeTshirtUnderwear: "T-Shirt / Underwear",
+    productTypeShirtBlouse: "Shirt / Blouse",
+    productTypeDenim: "Jeans / Denim",
     productTypeOuterwear: "Outerwear",
+    productTypeSwimwear: "Swimwear",
+    productTypeSocks: "Socks",
+    productTypeOfficewear: "Officewear",
+    productTypeBabyKids: "Baby / Kids",
+    productTypeHomeTextile: "Home Textile",
     noFile: "No file selected",
     liveTitle: "Live Session",
     readyActivity: "Choose an analysis mode to begin.",
@@ -93,6 +106,10 @@ const translations = {
     confidenceLabel: "Confidence",
     qualityScoreLabel: "Quality Score",
     scoreNoteEmpty: "Run a product URL or label analysis to reveal the scoring summary.",
+    performanceScoreLabel: "Performance / Quality",
+    sustainabilityScoreLabel: "Sustainability",
+    finalScoreLabel: "Final",
+    breakdownGradeLabel: "Grade",
     naturalRatioLabel: "Natural Fiber Ratio",
     syntheticRatioLabel: "Synthetic Fiber Ratio",
     totalRatioLabel: "Total Ratio",
@@ -141,6 +158,8 @@ const translations = {
     fiberBalanceTitle: "Fiber Balance",
     sourceReadTitle: "Source Read",
     scoreContextTitle: "Product Context",
+    scoreDetailsTitle: "Score Model",
+    scoreDetailsText: "Performance {performance}, sustainability {sustainability}, final {final}. Category: {category}.",
     assistantEyebrow: "Smart Clothing Assistant",
     assistantTitle: "Is this product worth it?",
     assistantEmpty: "Run an analysis to receive a price, fabric, and sustainability recommendation.",
@@ -174,10 +193,17 @@ const translations = {
     labelFormCopy: "Kumas oranlarini okumak ve skorlamak icin net bir etiket fotografi yukle.",
     labelButton: "Gorseli Analiz Et",
     productTypeGeneral: "Genel / Gunluk",
-    productTypeActivewear: "Spor / Performans",
-    productTypeWinter: "Kislik / Sicak Tutma",
-    productTypeUnderwear: "Ic Giyim",
+    productTypeActivewear: "Tayt / Activewear",
+    productTypeKnitwear: "Kazak / Triko",
+    productTypeTshirtUnderwear: "T-Shirt / Ic Giyim",
+    productTypeShirtBlouse: "Gomlek / Bluz",
+    productTypeDenim: "Kot / Denim",
     productTypeOuterwear: "Dis Giyim",
+    productTypeSwimwear: "Mayo / Yuzme",
+    productTypeSocks: "Corap",
+    productTypeOfficewear: "Is / Ofis",
+    productTypeBabyKids: "Bebek / Cocuk",
+    productTypeHomeTextile: "Ev Tekstili",
     noFile: "Dosya secilmedi",
     liveTitle: "Canli Oturum",
     readyActivity: "Baslamak icin bir analiz modu sec.",
@@ -185,6 +211,10 @@ const translations = {
     confidenceLabel: "Guven",
     qualityScoreLabel: "Kalite Skoru",
     scoreNoteEmpty: "Skor ozetini gormek icin URL veya etiket analizi calistir.",
+    performanceScoreLabel: "Performans / Kalite",
+    sustainabilityScoreLabel: "Surdurulebilirlik",
+    finalScoreLabel: "Nihai",
+    breakdownGradeLabel: "Not",
     naturalRatioLabel: "Dogal Lif Orani",
     syntheticRatioLabel: "Sentetik Lif Orani",
     totalRatioLabel: "Toplam Oran",
@@ -233,6 +263,8 @@ const translations = {
     fiberBalanceTitle: "Lif Dengesi",
     sourceReadTitle: "Kaynak Okumasi",
     scoreContextTitle: "Urun Baglami",
+    scoreDetailsTitle: "Skor Modeli",
+    scoreDetailsText: "Performans {performance}, surdurulebilirlik {sustainability}, nihai {final}. Kategori: {category}.",
     assistantEyebrow: "Akilli Kiyafet Asistani",
     assistantTitle: "Bu urun fiyatina deger mi?",
     assistantEmpty: "Fiyat, kumas ve surdurulebilirlik tavsiyesi almak icin analiz calistir.",
@@ -297,10 +329,19 @@ function formatPrice(price) {
   }
 }
 
+function formatScoreMetric(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return "-";
+  }
+  return Number.isInteger(numericValue) ? String(numericValue) : numericValue.toFixed(1);
+}
+
 function setAssistantEmpty() {
   assistantBadge.textContent = t("waiting");
   assistantBody.classList.remove("loading");
-  assistantBody.innerHTML = `<p class="empty-state">${t("assistantEmpty")}</p>`;
+  clearElement(assistantBody);
+  appendTextBlock(assistantBody, t("assistantEmpty"), "empty-state");
 }
 
 function setAssistantLoading() {
@@ -316,17 +357,39 @@ function setAssistantLoading() {
   `;
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+function clearElement(element) {
+  element.replaceChildren();
 }
 
-function renderAssistantMarkdown(paragraph) {
-  return escapeHtml(paragraph).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+function appendTextBlock(parent, text, className = "") {
+  const paragraph = document.createElement("p");
+  if (className) {
+    paragraph.className = className;
+  }
+  paragraph.textContent = text;
+  parent.appendChild(paragraph);
+  return paragraph;
+}
+
+function appendMarkdownParagraph(parent, paragraphText) {
+  const paragraph = document.createElement("p");
+  const lines = String(paragraphText || "").split("\n");
+  lines.forEach((line, lineIndex) => {
+    if (lineIndex > 0) {
+      paragraph.appendChild(document.createElement("br"));
+    }
+    const parts = line.split(/(\*\*[^*]+\*\*)/g).filter(Boolean);
+    parts.forEach((part) => {
+      if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+        const strong = document.createElement("strong");
+        strong.textContent = part.slice(2, -2);
+        paragraph.appendChild(strong);
+      } else {
+        paragraph.appendChild(document.createTextNode(part));
+      }
+    });
+  });
+  parent.appendChild(paragraph);
 }
 
 function renderAssistantText(text, provider = "", warning = "") {
@@ -339,18 +402,22 @@ function renderAssistantText(text, provider = "", warning = "") {
 
   assistantBadge.textContent = provider && !isFallback ? provider : t("assistantReady");
   assistantBody.classList.remove("loading");
-  const recommendationHtml = paragraphs.length
-    ? paragraphs.map((paragraph) => `<p>${renderAssistantMarkdown(paragraph).replace(/\n/g, "<br>")}</p>`).join("")
-    : `<p class="empty-state">${t("assistantUnavailable")}</p>`;
-  assistantBody.innerHTML = notice
-    ? `<p class="assistant-warning">${escapeHtml(notice)}</p>${recommendationHtml}`
-    : recommendationHtml;
+  clearElement(assistantBody);
+  if (notice) {
+    appendTextBlock(assistantBody, notice, "assistant-warning");
+  }
+  if (!paragraphs.length) {
+    appendTextBlock(assistantBody, t("assistantUnavailable"), "empty-state");
+    return;
+  }
+  paragraphs.forEach((paragraph) => appendMarkdownParagraph(assistantBody, paragraph));
 }
 
 function renderAssistantError() {
   assistantBadge.textContent = t("assistantUnavailable");
   assistantBody.classList.remove("loading");
-  assistantBody.innerHTML = `<p class="empty-state">${t("assistantUnavailable")}</p>`;
+  clearElement(assistantBody);
+  appendTextBlock(assistantBody, t("assistantUnavailable"), "empty-state");
 }
 
 function selectedAssistantModel() {
@@ -379,13 +446,23 @@ function buildAssistantPayload(data, sourceLabel, question = "") {
     natural_ratio: Number(score.natural_ratio || 0),
     synthetic_ratio: Number(score.synthetic_ratio || 0),
     scoring_notes: Array.isArray(score.scoring_notes) ? score.scoring_notes : [],
-    rag_database_notes: data.product_type ? [`Ürün tipi: ${data.product_type}`] : [],
+    score_details: score.score_details || null,
+    rag_database_notes: data.product_type || score.score_details?.product_type
+      ? [`Ürün tipi: ${data.product_type || score.score_details.product_type}`]
+      : [],
     question: question.trim() || null,
     model: modelChoice.model,
   };
 }
 
 async function requestAssistantRecommendation(data, sourceLabel, question = "") {
+  assistantRequestId += 1;
+  const requestId = assistantRequestId;
+  if (assistantAbortController) {
+    assistantAbortController.abort();
+  }
+  assistantAbortController = new AbortController();
+
   const fabric = data.fabric || {};
   if (!fabric.is_valid || !Array.isArray(fabric.composition) || !fabric.composition.length) {
     setAssistantEmpty();
@@ -398,14 +475,21 @@ async function requestAssistantRecommendation(data, sourceLabel, question = "") 
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(buildAssistantPayload(data, sourceLabel, question)),
+      signal: assistantAbortController.signal,
     });
     const payload = await response.json();
+    if (requestId !== assistantRequestId) {
+      return;
+    }
     if (!response.ok || payload.success === false) {
       renderAssistantError();
       return;
     }
     renderAssistantText(payload.recommendation, payload.provider, payload.warning);
-  } catch {
+  } catch (error) {
+    if (error.name === "AbortError" || requestId !== assistantRequestId) {
+      return;
+    }
     renderAssistantError();
   }
 }
@@ -614,6 +698,10 @@ function resetResults() {
   scoreValue.textContent = "0";
   gradeValue.textContent = t("pending");
   scoreNote.textContent = t("scoreNoteEmpty");
+  performanceScoreValue.textContent = "-";
+  sustainabilityScoreValue.textContent = "-";
+  finalScoreValue.textContent = "-";
+  breakdownGradeValue.textContent = "-";
   naturalRatio.textContent = "0%";
   syntheticRatio.textContent = "0%";
   totalRatio.textContent = "0%";
@@ -629,22 +717,32 @@ function resetResults() {
 }
 
 function renderComposition(composition) {
-  compositionList.innerHTML = "";
+  clearElement(compositionList);
 
   if (!composition.length) {
-    compositionList.innerHTML = `<p class="empty-state">${t("noFabric")}</p>`;
+    appendTextBlock(compositionList, t("noFabric"), "empty-state");
     return;
   }
 
   for (const item of composition) {
     const ratio = Number(item.ratio || 0);
     const row = document.createElement("div");
+    const fabricName = document.createElement("span");
+    const bar = document.createElement("div");
+    const barFill = document.createElement("span");
+    const ratioText = document.createElement("span");
+
     row.className = "composition-item";
-    row.innerHTML = `
-      <span class="fabric-name">${fabricLabels[item.fabric] || item.fabric}</span>
-      <div class="bar" aria-hidden="true"><span style="--ratio: ${Math.min(ratio, 100)}%"></span></div>
-      <span class="ratio">${ratio}%</span>
-    `;
+    fabricName.className = "fabric-name";
+    fabricName.textContent = fabricLabels[item.fabric] || item.fabric || "-";
+    bar.className = "bar";
+    bar.setAttribute("aria-hidden", "true");
+    barFill.style.setProperty("--ratio", `${Math.min(Math.max(ratio, 0), 100)}%`);
+    bar.appendChild(barFill);
+    ratioText.className = "ratio";
+    ratioText.textContent = `${ratio}%`;
+
+    row.append(fabricName, bar, ratioText);
     compositionList.appendChild(row);
   }
 }
@@ -683,6 +781,18 @@ function renderInsights(score, fabric, confidence, source) {
     });
   }
 
+  if (score.score_details) {
+    items.push({
+      title: t("scoreDetailsTitle"),
+      text: t("scoreDetailsText", {
+        performance: score.score_details.performance_score ?? "-",
+        sustainability: score.score_details.sustainability_score ?? "-",
+        final: score.score_details.final_score ?? qualityScore,
+        category: score.score_details.category || "-",
+      }),
+    });
+  }
+
   if (Array.isArray(score.scoring_notes)) {
     score.scoring_notes.forEach((note) => {
       if (note) {
@@ -694,12 +804,17 @@ function renderInsights(score, fabric, confidence, source) {
     });
   }
 
-  insightList.innerHTML = "";
+  clearElement(insightList);
 
   for (const item of items) {
     const row = document.createElement("article");
+    const title = document.createElement("strong");
+    const text = document.createElement("p");
+
     row.className = "insight-item";
-    row.innerHTML = `<strong>${item.title}</strong><p>${item.text}</p>`;
+    title.textContent = item.title;
+    text.textContent = item.text;
+    row.append(title, text);
     insightList.appendChild(row);
   }
 
@@ -708,27 +823,35 @@ function renderInsights(score, fabric, confidence, source) {
 
 function renderHistory() {
   historyCount.textContent = `${historyEntries.length} ${t("entries")}`;
-  historyList.innerHTML = "";
+  clearElement(historyList);
 
   if (!historyEntries.length) {
-    historyList.innerHTML = `<p class="empty-state">${t("historyEmpty")}</p>`;
+    appendTextBlock(historyList, t("historyEmpty"), "empty-state");
     return;
   }
 
   for (const entry of historyEntries) {
     const row = document.createElement("article");
+    const content = document.createElement("div");
+    const title = document.createElement("strong");
+    const meta = document.createElement("div");
+    const source = document.createElement("span");
+    const grade = document.createElement("span");
+    const total = document.createElement("span");
+    const score = document.createElement("div");
+
     row.className = "history-item";
-    row.innerHTML = `
-      <div>
-        <strong>${entry.title}</strong>
-        <div class="history-meta">
-          <span>${t(entry.sourceKey)}</span>
-          <span>${t("grade")} ${entry.grade}</span>
-          <span>${t("total")} ${entry.total}%</span>
-        </div>
-      </div>
-      <div class="history-score">${entry.score}</div>
-    `;
+    meta.className = "history-meta";
+    score.className = "history-score";
+    title.textContent = entry.title;
+    source.textContent = t(entry.sourceKey);
+    grade.textContent = `${t("grade")} ${entry.grade}`;
+    total.textContent = `${t("total")} ${entry.total}%`;
+    score.textContent = entry.score;
+
+    meta.append(source, grade, total);
+    content.append(title, meta);
+    row.append(content, score);
     historyList.appendChild(row);
   }
 }
@@ -765,6 +888,10 @@ function renderResult(data, sourceLabel, options = {}) {
   scoreRing.style.setProperty("--score", String(qualityScore));
   scoreValue.textContent = String(qualityScore);
   gradeValue.textContent = `${t("grade")} ${score.grade || "F"}`;
+  performanceScoreValue.textContent = formatScoreMetric(score.score_details?.performance_score);
+  sustainabilityScoreValue.textContent = formatScoreMetric(score.score_details?.sustainability_score);
+  finalScoreValue.textContent = formatScoreMetric(score.score_details?.final_score ?? qualityScore);
+  breakdownGradeValue.textContent = score.grade || "F";
   scoreNote.textContent = fabric.is_valid
     ? sourceKey(sourceLabel) === "labelOcr" && confidence > 0
       ? t("scoreValidOcr", { confidence: Math.round(confidence) })

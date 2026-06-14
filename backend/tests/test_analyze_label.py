@@ -274,6 +274,31 @@ def test_analyze_label_passes_selected_product_type_to_scorer(
     assert "spor" in str(captured["product_context"])
 
 
+def test_analyze_label_normalizes_unknown_product_type_to_general(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fallback to general scoring when product_type is unsupported."""
+    captured = _install_fake_pipeline(
+        monkeypatch,
+        raw_text="88% Polyester 12% Elastane",
+        confident_text="88% Polyester 12% Elastane",
+        composition=[{"fabric": "polyester", "ratio": 88}, {"fabric": "elastan", "ratio": 12}],
+    )
+
+    response = client.post(
+        "/analyze/label",
+        files={
+            "file": ("label.jpg", b"fake-image-bytes", "image/jpeg"),
+            "product_type": (None, "unexpected-type"),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["product_type"] == "general"
+    assert captured["product_context"] is None
+
+
 def test_analyze_label_returns_400_when_file_is_missing(client: TestClient) -> None:
     """Return a structured 400 response when no file is sent."""
     response = client.post("/analyze/label")

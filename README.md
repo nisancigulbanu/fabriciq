@@ -92,11 +92,17 @@ Serves the local analysis interface for product URLs and label image uploads.
 
 ### `POST /analyze/label`
 
-Request: `multipart/form-data` with a `file` field.
+Request: `multipart/form-data` with a `file` field. Optional `product_type` values:
+
+```text
+general, activewear, knitwear, tshirt_underwear, shirt_blouse, denim,
+outerwear, swimwear, socks, officewear, baby_kids, home_textile
+```
 
 ```powershell
 curl -X POST "http://127.0.0.1:8000/analyze/label" `
-  -F "file=@etiket_foto.jpg"
+  -F "file=@etiket_foto.jpg" `
+  -F "product_type=activewear"
 ```
 
 If OCR confidence is low or no valid fabric composition can be parsed, the response includes an `advice` message asking the user to retake the label photo with better lighting, a straight angle, and sharper text.
@@ -131,14 +137,33 @@ Example response:
     "warning": null
   },
   "score": {
-    "quality_score": 51,
-    "grade": "F",
+    "quality_score": 50,
+    "grade": "D",
     "natural_ratio": 0,
-    "synthetic_ratio": 100
+    "synthetic_ratio": 100,
+    "scoring_notes": [
+      "Ürün tipi bağlamı: activewear."
+    ],
+    "score_details": {
+      "performance_score": 57.2,
+      "sustainability_score": 40.0,
+      "final_score": 50.3,
+      "category": "Düşük",
+      "product_type": "activewear",
+      "formula_version": "kp_sp_v1"
+    }
   },
   "advice": null
 }
 ```
+
+Quality scoring uses a product-aware KP/SP model:
+
+```text
+final_score = 0.6 * performance_score + 0.4 * sustainability_score
+```
+
+The legacy `quality_score` and `grade` fields are preserved for clients, while `score_details` exposes the underlying performance, sustainability, category, product type, and formula version.
 
 Dynamic pages are handled with Selenium first and Playwright as a fallback. Some stores may still block browser-based scraping at the edge/CDN layer. Current blocked response:
 
@@ -170,13 +195,13 @@ These endpoints are for local development only:
 ## Testing
 
 ```powershell
-pytest backend\tests\test_analyze_label.py
+pytest backend\tests\test_quality_score.py backend\tests\test_analyze_label.py
 ```
 
 Current verified status:
 
 ```text
-13 passed
+23 passed
 ```
 
 ## Next Work
