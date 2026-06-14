@@ -65,12 +65,18 @@ def _install_fake_pipeline(
     fake_parser.parse_fabric_composition = parse_fabric_composition
 
     fake_scorer = types.ModuleType("scoring.quality_score")
-    fake_scorer.calculate_quality_score = lambda parsed_composition: {
-        "quality_score": 53,
-        "grade": "F",
-        "natural_ratio": 60,
-        "synthetic_ratio": 40,
-    }
+
+    def calculate_quality_score(parsed_composition, product_context=None):  # type: ignore[no-untyped-def]
+        captured["product_context"] = product_context
+        return {
+            "quality_score": 53,
+            "grade": "F",
+            "natural_ratio": 60,
+            "synthetic_ratio": 40,
+            "scoring_notes": [],
+        }
+
+    fake_scorer.calculate_quality_score = calculate_quality_score
 
     fake_paddle_engine = types.ModuleType("ocr.engine_paddle")
     fake_paddle_engine.run_paddleocr = lambda processed_image: {
@@ -241,6 +247,31 @@ def test_analyze_label_returns_non_empty_fabric_composition(
 
     assert response.status_code == 200
     assert response.json()["fabric"]["composition"]
+
+
+def test_analyze_label_passes_selected_product_type_to_scorer(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use selected OCR product type as scoring context."""
+    captured = _install_fake_pipeline(
+        monkeypatch,
+        raw_text="88% Polyester 12% Elastane",
+        confident_text="88% Polyester 12% Elastane",
+        composition=[{"fabric": "polyester", "ratio": 88}, {"fabric": "elastan", "ratio": 12}],
+    )
+
+    response = client.post(
+        "/analyze/label",
+        files={
+            "file": ("label.jpg", b"fake-image-bytes", "image/jpeg"),
+            "product_type": (None, "activewear"),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["product_type"] == "activewear"
+    assert "spor" in str(captured["product_context"])
 
 
 def test_analyze_label_returns_400_when_file_is_missing(client: TestClient) -> None:
@@ -544,3 +575,33 @@ def test_analyze_url_returns_structured_error_for_unexpected_dynamic_failure(
     assert response.json()["error"]["message"] == (
         "Bu urun sayfasi otomatik okunamadi. Etiket fotografi ile tekrar deneyebilirsiniz."
     )
+
+
+def test_assistant_recommendation_returns_local_fallback_without_api_key(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return a deterministic assistant recommendation when Gemini credentials are absent."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+    response = client.post(
+        "/assistant/recommend",
+        json={
+            "product_name": "Test T-Shirt",
+            "price": 300,
+            "fabric_composition": {"polyester": 80, "viscose": 20},
+            "quality_score": 47,
+            "grade": "C",
+            "natural_ratio": 0,
+            "synthetic_ratio": 100,
+            "question": "Bu yazin giyilir mi?",
+        },
+    )
+
+    response_json = response.json()
+    assert response.status_code == 200
+    assert response_json["success"] is True
+    assert response_json["provider"] == "local_fallback"
+    assert "Polyester" in response_json["recommendation"] or "polyester" in response_json["recommendation"]
+    assert "Kullanici sorusu" in response_json["recommendation"]

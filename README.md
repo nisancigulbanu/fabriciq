@@ -14,7 +14,7 @@ FabricIQ is a FastAPI backend that analyzes textile labels and e-commerce produc
 | Quality scoring | Done |
 | Static URL analysis | Done |
 | Dynamic URL analysis | Done |
-| LLM advisor | Planned |
+| LLM advisor | Done |
 
 ## Architecture
 
@@ -47,6 +47,15 @@ python -m playwright install chromium
 python -m uvicorn backend.main:app --reload
 ```
 
+Optional Gemini configuration for the FabricIQ assistant:
+
+```powershell
+GEMINI_API_KEY=your_google_ai_studio_key
+GEMINI_MODEL=gemini-3-flash-preview
+GEMINI_MAX_OUTPUT_TOKENS=4096
+GEMINI_THINKING_BUDGET=0
+```
+
 Open API docs:
 
 ```text
@@ -57,6 +66,18 @@ Open the local web interface. It supports both product URL analysis and label im
 
 ```text
 http://127.0.0.1:8000/
+```
+
+Backend logs are written to:
+
+```text
+logs/fabriciq.log
+```
+
+Follow them live in PowerShell:
+
+```powershell
+Get-Content logs\fabriciq.log -Wait
 ```
 
 ## API
@@ -155,7 +176,7 @@ pytest backend\tests\test_analyze_label.py
 Current verified status:
 
 ```text
-6 passed
+13 passed
 ```
 
 ## Next Work

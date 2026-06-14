@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import importlib
+import json
 import logging
 import os
 import sys
@@ -9,8 +10,10 @@ import tempfile
 import time
 from email import policy
 from email.parser import BytesParser
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,7 +30,49 @@ from backend.url_parser.dynamic import (
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
 FRAMES_DIR = BASE_DIR / "forweb01"
+LOG_DIR = BASE_DIR.parent / "logs"
 logger = logging.getLogger("uvicorn.error")
+
+
+def _configure_file_logging() -> None:
+    """Write backend logs to a local file in addition to uvicorn output."""
+    LOG_DIR.mkdir(exist_ok=True)
+    log_path = Path(os.getenv("FABRICIQ_LOG_FILE", LOG_DIR / "fabriciq.log"))
+    if any(isinstance(handler, RotatingFileHandler) and Path(handler.baseFilename) == log_path for handler in logger.handlers):
+        return
+
+    file_handler = RotatingFileHandler(
+        log_path,
+        maxBytes=1_000_000,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    )
+    logger.addHandler(file_handler)
+    logger.setLevel(logging.INFO)
+
+
+def _load_env_file() -> None:
+    """Load simple KEY=value pairs from .env without overriding existing env vars."""
+    for env_path in (BASE_DIR / ".env", BASE_DIR.parent / ".env"):
+        if not env_path.exists():
+            continue
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip().lstrip("\ufeff")
+            value = value.strip().strip('"').strip("'")
+            if not os.environ.get(key):
+                os.environ[key] = value
+
+
+_load_env_file()
+_configure_file_logging()
 
 app = FastAPI(title="FabricIQ Backend")
 app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
@@ -38,6 +83,43 @@ class UrlRequest(BaseModel):
     """Request body for URL-based product analysis."""
 
     url: str
+
+
+class AssistantRequest(BaseModel):
+    """Request body for FabricIQ assistant recommendations."""
+
+    product_name: str | None = None
+    price: float | None = None
+    fabric_composition: dict[str, float]
+    quality_score: int | float | str | None = None
+    grade: str | None = None
+    natural_ratio: float | None = None
+    synthetic_ratio: float | None = None
+    scoring_notes: list[str] | None = None
+    rag_database_notes: str | list[str] | None = None
+    question: str | None = None
+    model: str | None = None
+
+
+FABRIC_RAG_KNOWLEDGE = {
+    "pamuk": "Pamuk nefes alir, gunluk kullanimda konforludur; ancak bakim ve su tuketimi acisindan dikkatli degerlendirilmelidir.",
+    "cotton": "Pamuk nefes alir, gunluk kullanimda konforludur; ancak bakim ve su tuketimi acisindan dikkatli degerlendirilmelidir.",
+    "polyester": "Polyester dayanikli ve ucuzdur fakat petrol bazlidir, mikroplastik yayabilir ve sicak havada terletme riski tasir.",
+    "viskoz": "Viskoz yumusak ve dokumlu bir liftir; seluloz bazli olsa da uretim sureci kimyasal yogun olabilir.",
+    "viscose": "Viskoz yumusak ve dokumlu bir liftir; seluloz bazli olsa da uretim sureci kimyasal yogun olabilir.",
+    "elastan": "Elastan esneklik ve rahatlik katar; dusuk oranlarda yararlidir fakat geri donusumu zorlastirabilir.",
+    "elastane": "Elastan esneklik ve rahatlik katar; dusuk oranlarda yararlidir fakat geri donusumu zorlastirabilir.",
+    "poliamid": "Poliamid dayanikli bir sentetik liftir; uzun omurlu olabilir fakat dogada cozunmesi zordur.",
+    "polyamide": "Poliamid dayanikli bir sentetik liftir; uzun omurlu olabilir fakat dogada cozunmesi zordur.",
+    "keten": "Keten nefes alan, dayanikli ve daha dusuk su ihtiyaci olan degerli bir dogal liftir.",
+    "linen": "Keten nefes alan, dayanikli ve daha dusuk su ihtiyaci olan degerli bir dogal liftir.",
+    "yün": "Yun isi dengesi iyi olan dogal bir liftir; kalite ve bakim acisindan avantajlidir.",
+    "wool": "Yun isi dengesi iyi olan dogal bir liftir; kalite ve bakim acisindan avantajlidir.",
+    "akrilik": "Akrilik yun hissi verebilir ancak sentetiktir, boncuklanma ve mikroplastik riski tasir.",
+    "acrylic": "Akrilik yun hissi verebilir ancak sentetiktir, boncuklanma ve mikroplastik riski tasir.",
+}
+
+GEMINI_DEFAULT_MODEL = "gemini-3-flash-preview"
 
 
 FABRIC_DEBUG_KEYWORDS = (
@@ -100,13 +182,14 @@ def _empty_fabric_result(warning: str | None = None) -> dict[str, object]:
     }
 
 
-def _empty_score_result() -> dict[str, int | str]:
+def _empty_score_result() -> dict[str, int | str | list[str]]:
     """Return an empty score payload."""
     return {
         "quality_score": 0,
         "grade": "F",
         "natural_ratio": 0,
         "synthetic_ratio": 0,
+        "scoring_notes": [],
     }
 
 
@@ -160,26 +243,57 @@ def _debug_disabled_response() -> JSONResponse:
     )
 
 
-def _extract_uploaded_file(request_body: bytes, content_type: str) -> tuple[str, bytes] | None:
-    """Extract the uploaded file name and bytes from a multipart request body."""
+def _extract_multipart_upload(request_body: bytes, content_type: str) -> tuple[tuple[str, bytes] | None, dict[str, str]]:
+    """Extract uploaded file and plain form fields from a multipart request body."""
     message = BytesParser(policy=policy.default).parsebytes(
         f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + request_body
     )
 
     if not message.is_multipart():
-        return None
+        return None, {}
 
+    uploaded_file: tuple[str, bytes] | None = None
+    fields: dict[str, str] = {}
     for part in message.iter_parts():
-        if part.get_param("name", header="content-disposition") != "file":
+        field_name = part.get_param("name", header="content-disposition")
+        if not field_name:
             continue
 
-        filename = part.get_filename()
-        payload = part.get_payload(decode=True) or b""
-        if not filename:
-            return None
-        return filename, payload
+        if field_name == "file":
+            filename = part.get_filename()
+            payload = part.get_payload(decode=True) or b""
+            if filename:
+                uploaded_file = (filename, payload)
+            continue
 
-    return None
+        payload = part.get_payload(decode=True) or b""
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            fields[str(field_name)] = payload.decode(charset).strip()
+        except UnicodeDecodeError:
+            fields[str(field_name)] = payload.decode("utf-8", errors="ignore").strip()
+
+    return uploaded_file, fields
+
+
+def _extract_uploaded_file(request_body: bytes, content_type: str) -> tuple[str, bytes] | None:
+    """Extract the uploaded file name and bytes from a multipart request body."""
+    uploaded_file, _ = _extract_multipart_upload(request_body, content_type)
+    return uploaded_file
+
+
+def _label_product_context(product_type: str | None) -> str | None:
+    """Return scorer context for label OCR based on the selected product type."""
+    product_type_value = (product_type or "").strip().lower()
+    if not product_type_value or product_type_value == "general":
+        return None
+    context_by_type = {
+        "activewear": "spor performans tayt yoga leggings fitness koşu activewear",
+        "winter": "kışlık mont kazak hırka sıcak tutma winter wool knitwear",
+        "underwear": "iç giyim underwear hassas cilt esneklik konfor",
+        "outerwear": "dış giyim mont ceket kaban outerwear dayanıklılık",
+    }
+    return context_by_type.get(product_type_value, product_type_value)
 
 
 def _debug_relevant_lines(text: str) -> list[str]:
@@ -242,11 +356,18 @@ def _composition_signature(composition: object) -> tuple[tuple[str, float], ...]
 def _score_if_valid(
     fabric_result: dict[str, object],
     calculate_quality_score: object,
-) -> dict[str, int | str]:
+    product_context: str | None = None,
+) -> dict[str, int | str | list[str]]:
     """Calculate quality only for trusted fabric compositions."""
     if not fabric_result.get("is_valid") or not fabric_result.get("composition"):
         return _empty_score_result()
-    return calculate_quality_score(fabric_result["composition"])  # type: ignore[operator]
+    try:
+        return calculate_quality_score(  # type: ignore[operator]
+            fabric_result["composition"],
+            product_context=product_context,
+        )
+    except TypeError:
+        return calculate_quality_score(fabric_result["composition"])  # type: ignore[operator]
 
 
 def _build_public_analysis_fields(
@@ -279,6 +400,228 @@ def _build_public_analysis_fields(
         "confidence_label": _confidence_label(confidence_score),
         "warnings": warnings,
     }
+
+
+def _assistant_material_context(fabric_composition: dict[str, float]) -> list[str]:
+    """Return RAG snippets for the fabrics found in the product."""
+    snippets: list[str] = []
+    for fabric_name, ratio in fabric_composition.items():
+        normalized_name = str(fabric_name).strip().lower()
+        knowledge = FABRIC_RAG_KNOWLEDGE.get(normalized_name)
+        if knowledge:
+            snippets.append(f"{fabric_name} (%{ratio:g}): {knowledge}")
+        else:
+            snippets.append(f"{fabric_name} (%{ratio:g}): Bu materyal icin bilgi tabaninda ozel not yok.")
+    return snippets
+
+
+def _assistant_extra_rag_notes(notes: str | list[str] | None) -> list[str]:
+    """Normalize optional RAG notes supplied by the caller."""
+    if notes is None:
+        return []
+    if isinstance(notes, str):
+        return [notes.strip()] if notes.strip() else []
+    return [str(note).strip() for note in notes if str(note).strip()]
+
+
+def _assistant_rag_context(request: AssistantRequest) -> list[str]:
+    """Return all RAG snippets available for the assistant call."""
+    return [
+        *_assistant_material_context(request.fabric_composition),
+        *_assistant_extra_rag_notes(request.rag_database_notes),
+    ]
+
+
+def _local_assistant_recommendation(request: AssistantRequest, rag_context: list[str]) -> str:
+    """Build a deterministic recommendation when no LLM API key is configured."""
+    synthetic_ratio = float(request.synthetic_ratio or 0)
+    natural_ratio = float(request.natural_ratio or 0)
+    price_text = f"{request.price:g} TL" if request.price is not None else "fiyat bilgisi yok"
+    grade = request.grade or str(request.quality_score or "belirsiz")
+
+    if synthetic_ratio >= 70:
+        verdict = "Bu ürün fiyat/içerik açısından temkinli değerlendirilmeli."
+        reason = "Sentetik lif oranı yüksek olduğu için sıcak havada terletme, koku tutma ve mikroplastik etkisi açısından dezavantaj oluşturabilir."
+        alternative = "Aynı tarzda pamuk, keten, yün, tencel/liyosel veya daha yüksek doğal lif oranı olan alternatiflerle karşılaştır."
+    elif natural_ratio >= 70:
+        verdict = "Bu ürün içerik açısından güçlü ve konfor odaklı bir aday."
+        reason = "Doğal lif oranı yüksek olduğu için nefes alma, günlük konfor ve mevsimsel kullanım beklentisi daha iyi."
+        alternative = "Benzer fiyat bandında daha yüksek kalite skoru yoksa bu içerik dengesi mantıklı görünüyor."
+    else:
+        verdict = "Bu ürün orta seviyede; karar fiyat, kullanım amacı ve alternatiflerle verilmeli."
+        reason = "Doğal ve sentetik lifler dengeli olduğu için hem konfor hem dayanıklılık tarafında artı ve eksiler birlikte değerlendirilir."
+        alternative = "Fiyat yakınsa doğal lif oranı daha yüksek bir seçenek daha mantıklı olabilir."
+
+    material_notes = "\n".join(f"- {snippet}" for snippet in rag_context)
+    scoring_notes = "\n".join(f"- {note}" for note in (request.scoring_notes or []))
+    scoring_notes_text = f"\n{scoring_notes}" if scoring_notes else ""
+    question_note = f"\n\nKullanici sorusu: {request.question}" if request.question else ""
+    return (
+        "**Hızlı Özet**\n"
+        f"- {verdict} Fiyat: {price_text}. Kalite notu/skoru: {grade}.\n\n"
+        "**Kumaşın Artıları ve Eksileri**\n"
+        f"- Doğal lif oranı %{natural_ratio:g}, sentetik lif oranı %{synthetic_ratio:g}.\n"
+        f"- {reason}\n"
+        f"{material_notes}\n\n"
+        "**Fiyat Değerlendirmesi**\n"
+        "- Fiyat bilgisi yoksa fiyat/performans için kesin çıkarım yapmam; yalnızca kalite skoru ve kumaş içeriğini yorumlarım.\n"
+        "- Fiyat mevcutsa kalite skoru ve materyal dengesiyle birlikte değerlendirilmelidir."
+        f"{scoring_notes_text}\n\n"
+        "**Alternatif Önerisi**\n"
+        f"- {alternative}"
+        f"{question_note}"
+    )
+
+
+def _assistant_system_prompt() -> str:
+    """Return the shared assistant behavior prompt."""
+    return (
+        "Sen 'FabricIQ' isimli akıllı tekstil analiz asistanısın. Görevin, teknik kumaş verilerini "
+        "ve fiyat bilgilerini inceleyerek kullanıcılara anlaşılır, bilinçli ve kişiselleştirilmiş "
+        "alışveriş tavsiyeleri sunmaktır. Amacın, sürdürülebilir ve etik tüketim alışkanlıklarını "
+        "teşvik ederken kullanıcının parasının tam karşılığını almasına yardımcı olmaktır.\n\n"
+        "1. ROL VE TON:\n"
+        "- Uzman, güvenilir, tarafsız ve yönlendirici bir tekstil/alışveriş danışmanı gibi davran.\n"
+        "- Teknik terimleri günlük kullanıma ve pratik etkilere çevirerek açıkla: terletme, dayanıklılık, "
+        "çevreye etki, esneklik, koku tutma gibi.\n"
+        "- Kesin yargılarla konuşma. 'Bunu kesin al' veya 'bunu sakın alma' deme; veriye dayalı tavsiye ver.\n\n"
+        "2. VERİ YORUMLAMA VE RAG BAĞLAMI:\n"
+        "- Sana sağlanan Doğal/Sentetik Oranı, Kalite Skoru ve RAG Bilgi Tabanı Verileri'ne sadık kal.\n"
+        "- Sentetik oran yüksekse mikroplastik, doğada çözünmeme, terletme ve koku yapma risklerine dikkat çek.\n"
+        "- Ürün spor, tayt, yoga, koşu veya performans giyim bağlamındaysa polyester/poliamid + elastan karışımını "
+        "tek başına düşük kalite sayma; esneklik, form koruma ve hareket rahatlığı açısından fonksiyonel olabileceğini belirt.\n"
+        "- Pamuk, keten, yün, tencel/liyosel gibi doğal veya sürdürülebilir lifleri kalite ve konfor açısından olumlu değerlendir.\n"
+        "- Veri eksikse tahmin yapma. Eksik bilgiyi açıkça belirt ve sadece mevcut veriyle analiz yap.\n\n"
+        "3. FİYAT/PERFORMANS ANALİZİ:\n"
+        "- Ürünün fiyatını sistemin atadığı Kalite Skoru ile karşılaştır.\n"
+        "- Kumaş içeriği ucuz materyallerden oluştuğu halde fiyat yüksekse kullanıcıyı nazikçe marka primi konusunda uyar.\n"
+        "- Fiyatına göre iyi doğal lif dengesi sunuyorsa bunu fırsat veya mantıklı tercih olarak vurgula.\n\n"
+        "4. ÇIKTI FORMATI:\n"
+        "- Yanıtı Türkçe ver.\n"
+        "- Başlıkları kalın Markdown ile yaz ve alt kırılımlar için madde imleri kullan.\n"
+        "- Sırasıyla şu başlıkları kullan: **Hızlı Özet**, **Kumaşın Artıları ve Eksileri**, "
+        "**Fiyat Değerlendirmesi**, **Alternatif Önerisi**.\n"
+        "- Alternatif önerisi gerekmiyorsa yine başlığı yazıp kısa şekilde gerekmediğini veya hangi koşulda aranacağını belirt.\n"
+        "- Sadece verilen bağlamdaki bilgileri kullan; uydurma marka, fiyat, sertifika veya ürün bilgisi ekleme."
+    )
+
+
+def _assistant_user_prompt(request: AssistantRequest, rag_context: list[str]) -> str:
+    """Build the user prompt from product data and RAG context."""
+    user_payload = {
+        "Ürün Bilgisi": request.product_name,
+        "Kumaş Oranları": request.fabric_composition,
+        "Kalite Skoru": request.quality_score,
+        "Kalite Notu": request.grade,
+        "Skor Notları": request.scoring_notes or [],
+        "Doğal/Sentetik Oranı": {
+            "doğal": request.natural_ratio,
+            "sentetik": request.synthetic_ratio,
+        },
+        "Fiyat": request.price,
+        "RAG Veritabanı Notları": rag_context,
+        "Kullanıcı Sorusu": request.question,
+    }
+    return (
+        "Aşağıdaki RAG bağlamı ve ürün analiz verilerine göre yanıt ver. "
+        "Kullanıcı sorusu yoksa 'fiyatına değer mi?' sorusunu yanıtla. "
+        "Eksik alanlar için tahmin yapma.\n"
+        f"{json.dumps(user_payload, ensure_ascii=False)}"
+    )
+
+
+def _call_gemini_recommendation(request: AssistantRequest, rag_context: list[str]) -> tuple[str, str]:
+    """Call Gemini and return recommendation text plus provider name."""
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        logger.warning("Gemini assistant fallback: no API key loaded.")
+        return _local_assistant_recommendation(request, rag_context), "local_fallback"
+
+    model = request.model or os.getenv("GEMINI_MODEL", GEMINI_DEFAULT_MODEL)
+    timeout = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "90"))
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    logger.info("Calling Gemini assistant model=%s key_length=%s timeout=%s", model, len(api_key), timeout)
+    system_prompt = (
+        _assistant_system_prompt()
+    )
+    user_prompt = _assistant_user_prompt(request, rag_context)
+    response = requests.post(
+        endpoint,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
+        json={
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+            "generationConfig": {
+                "temperature": 0.35,
+                "maxOutputTokens": int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "4096")),
+                "thinkingConfig": {
+                    "thinkingBudget": int(os.getenv("GEMINI_THINKING_BUDGET", "0")),
+                },
+            },
+        },
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    candidates = payload.get("candidates") or []
+    finish_reasons = [
+        candidate.get("finishReason")
+        for candidate in candidates
+        if isinstance(candidate, dict)
+    ]
+    logger.info(
+        "Gemini assistant response candidates=%s finish_reasons=%s usage=%s",
+        len(candidates),
+        finish_reasons,
+        payload.get("usageMetadata"),
+    )
+    parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+    text = "\n".join(str(part.get("text") or "") for part in parts if isinstance(part, dict)).strip()
+    if not text:
+        logger.warning(
+            "Gemini assistant fallback: empty text response. candidates=%s finish_reasons=%s prompt_feedback=%s",
+            len(candidates),
+            finish_reasons,
+            payload.get("promptFeedback"),
+        )
+        return _local_assistant_recommendation(request, rag_context), "local_fallback"
+    return text, f"gemini:{model}"
+
+
+def _call_assistant_model(request: AssistantRequest, rag_context: list[str]) -> tuple[str, str]:
+    """Call Gemini unless the local model is explicitly selected."""
+    model = (request.model or "").strip().lower()
+    if model == "local":
+        return _local_assistant_recommendation(request, rag_context), "local_fallback"
+    return _call_gemini_recommendation(request, rag_context)
+
+
+def _assistant_provider_warning(exc: requests.RequestException) -> str:
+    """Return a user-facing warning for assistant provider failures."""
+    if isinstance(exc, requests.Timeout):
+        return (
+            "Secilen AI saglayicisi zamaninda yanit vermedi; FabricIQ yerel tavsiye mantigini kullandi."
+        )
+
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code == 404:
+        return (
+            "Secilen Gemini modeli veya API yolu bulunamadi; FabricIQ yerel tavsiye mantigini kullandi."
+        )
+    if status_code == 403:
+        return (
+            "API key yetkisi veya proje erisimi reddedildi; FabricIQ yerel tavsiye mantigini kullandi."
+        )
+    if status_code == 429:
+        return (
+            "API kota veya hiz limitine takildi; FabricIQ yerel tavsiye mantigini kullandi."
+        )
+
+    return "LLM istegi basarisiz oldu; FabricIQ yerel tavsiye mantigini kullandi."
 
 
 def _label_candidate_rank(
@@ -451,7 +794,9 @@ async def debug_label_ocr(request: Request) -> object:
 
     content_type = request.headers.get("content-type", "")
     request_body = await request.body()
-    uploaded_file = _extract_uploaded_file(request_body, content_type)
+    uploaded_file, form_fields = _extract_multipart_upload(request_body, content_type)
+    product_type = form_fields.get("product_type") or "general"
+    product_context = _label_product_context(product_type)
 
     if uploaded_file is None:
         return _error_response("No file was provided.", status_code=400, code="missing_file")
@@ -525,12 +870,50 @@ async def debug_label_ocr(request: Request) -> object:
                 temp_file_path.unlink()
 
 
+@app.post("/assistant/recommend", response_model=None)
+async def recommend_product(request: AssistantRequest) -> object:
+    """Return an LLM-backed buy/value recommendation for analyzed product data."""
+    try:
+        rag_context = _assistant_rag_context(request)
+        recommendation, provider = _call_assistant_model(request, rag_context)
+        return {
+            "success": True,
+            "recommendation": recommendation,
+            "provider": provider,
+            "rag_context": rag_context,
+        }
+    except requests.RequestException as exc:
+        logger.warning("Assistant LLM request failed; returning local fallback. Error: %s", exc)
+        rag_context = _assistant_rag_context(request)
+        return {
+            "success": True,
+            "recommendation": _local_assistant_recommendation(request, rag_context),
+            "provider": "local_fallback",
+            "rag_context": rag_context,
+            "warning": _assistant_provider_warning(exc),
+        }
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": {
+                    "code": "assistant_failed",
+                    "message": "Akilli kiyafet asistani su anda tavsiye uretmedi.",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                },
+            },
+        )
+
+
 @app.post("/analyze/label", response_model=None, openapi_extra=LABEL_UPLOAD_OPENAPI_EXTRA)
 async def analyze_label(request: Request) -> object:
     """Analyze an uploaded clothing label image end-to-end."""
     content_type = request.headers.get("content-type", "")
     request_body = await request.body()
-    uploaded_file = _extract_uploaded_file(request_body, content_type)
+    uploaded_file, form_fields = _extract_multipart_upload(request_body, content_type)
+    product_type = form_fields.get("product_type") or "general"
+    product_context = _label_product_context(product_type)
 
     if uploaded_file is None:
         return _error_response("No file was provided.", status_code=400, code="missing_file")
@@ -581,7 +964,7 @@ async def analyze_label(request: Request) -> object:
                 fabric_result.get("total_ratio"),
                 fabric_result.get("warning"),
             )
-            score_result = _score_if_valid(fabric_result, calculate_quality_score)
+            score_result = _score_if_valid(fabric_result, calculate_quality_score, product_context=product_context)
             candidate_results.append(
                 (
                     _label_candidate_rank(lmstudio_result, fabric_result),
@@ -622,7 +1005,7 @@ async def analyze_label(request: Request) -> object:
                     fabric_result.get("total_ratio"),
                     fabric_result.get("warning"),
                 )
-                score_result = _score_if_valid(fabric_result, calculate_quality_score)
+                score_result = _score_if_valid(fabric_result, calculate_quality_score, product_context=product_context)
                 candidate = (
                     _label_candidate_rank(ocr_result, fabric_result),
                     ocr_result,
@@ -704,7 +1087,11 @@ async def analyze_label(request: Request) -> object:
                         2,
                     ),
                 }
-                merged_score_result = _score_if_valid(merged_fabric_result, calculate_quality_score)
+                merged_score_result = _score_if_valid(
+                    merged_fabric_result,
+                    calculate_quality_score,
+                    product_context=product_context,
+                )
                 merged_candidate = (
                     _label_candidate_rank(merged_ocr_result, merged_fabric_result),
                     merged_ocr_result,
@@ -741,6 +1128,7 @@ async def analyze_label(request: Request) -> object:
             "fabric": fabric_result,
             "score": score_result,
             "advice": advice,
+            "product_type": product_type,
             **public_fields,
         }
     except FileNotFoundError as exc:
@@ -786,7 +1174,12 @@ async def analyze_url(request: UrlRequest) -> object:
             }
         scraped_text = str(extraction.get("raw_text") or "")
         fabric_result = parse_fabric_composition(scraped_text)
-        score_result = _score_if_valid(fabric_result, calculate_quality_score)
+        score_context = f"{request.url}\n{scraped_text}"
+        score_result = _score_if_valid(
+            fabric_result,
+            calculate_quality_score,
+            product_context=score_context,
+        )
         if not fabric_result.get("composition") or not fabric_result.get("is_valid"):
             return JSONResponse(
                 status_code=422,

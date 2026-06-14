@@ -10,6 +10,7 @@ const urlForm = document.querySelector("#urlForm");
 const labelForm = document.querySelector("#labelForm");
 const urlInput = document.querySelector("#productUrl");
 const labelInput = document.querySelector("#labelFile");
+const labelProductType = document.querySelector("#labelProductType");
 const urlButton = document.querySelector("#urlButton");
 const labelButton = document.querySelector("#labelButton");
 const fileName = document.querySelector("#fileName");
@@ -35,6 +36,12 @@ const validityBadge = document.querySelector("#validityBadge");
 const insightBadge = document.querySelector("#insightBadge");
 const compositionList = document.querySelector("#compositionList");
 const insightList = document.querySelector("#insightList");
+const assistantBadge = document.querySelector("#assistantBadge");
+const assistantBody = document.querySelector("#assistantBody");
+const assistantChatForm = document.querySelector("#assistantChatForm");
+const assistantModel = document.querySelector("#assistantModel");
+const assistantQuestion = document.querySelector("#assistantQuestion");
+const assistantButton = document.querySelector("#assistantButton");
 const historyCount = document.querySelector("#historyCount");
 const historyList = document.querySelector("#historyList");
 const messagePanel = document.querySelector("#messagePanel");
@@ -74,6 +81,11 @@ const translations = {
     labelFormTitle: "Label OCR Analysis",
     labelFormCopy: "Upload a clear label image to read fabric ratios with OCR before scoring.",
     labelButton: "Analyze Image",
+    productTypeGeneral: "General / Everyday",
+    productTypeActivewear: "Sport / Performance",
+    productTypeWinter: "Winter / Warmth",
+    productTypeUnderwear: "Underwear",
+    productTypeOuterwear: "Outerwear",
     noFile: "No file selected",
     liveTitle: "Live Session",
     readyActivity: "Choose an analysis mode to begin.",
@@ -128,6 +140,16 @@ const translations = {
     dominantTitle: "Dominant Material",
     fiberBalanceTitle: "Fiber Balance",
     sourceReadTitle: "Source Read",
+    scoreContextTitle: "Product Context",
+    assistantEyebrow: "Smart Clothing Assistant",
+    assistantTitle: "Is this product worth it?",
+    assistantEmpty: "Run an analysis to receive a price, fabric, and sustainability recommendation.",
+    assistantThinking: "Reviewing fabric, price, and sustainability signals.",
+    assistantReady: "Recommendation ready",
+    assistantUnavailable: "Assistant unavailable",
+    assistantFallbackNotice: "The selected AI provider did not return a usable response, so FabricIQ used its local recommendation logic.",
+    assistantPlaceholder: "Ask about price, comfort, or sustainability...",
+    assistantButton: "Ask",
     scoreValidUrl: "The composition was recognized and the quality score has been calculated.",
     scoreValidOcr: "Label data was read through OCR. Confidence: {confidence}%.",
     scoreInvalid: "The composition needs review before the result can be trusted.",
@@ -151,6 +173,11 @@ const translations = {
     labelFormTitle: "Etiket OCR Analizi",
     labelFormCopy: "Kumas oranlarini okumak ve skorlamak icin net bir etiket fotografi yukle.",
     labelButton: "Gorseli Analiz Et",
+    productTypeGeneral: "Genel / Gunluk",
+    productTypeActivewear: "Spor / Performans",
+    productTypeWinter: "Kislik / Sicak Tutma",
+    productTypeUnderwear: "Ic Giyim",
+    productTypeOuterwear: "Dis Giyim",
     noFile: "Dosya secilmedi",
     liveTitle: "Canli Oturum",
     readyActivity: "Baslamak icin bir analiz modu sec.",
@@ -205,6 +232,16 @@ const translations = {
     dominantTitle: "Baskin Materyal",
     fiberBalanceTitle: "Lif Dengesi",
     sourceReadTitle: "Kaynak Okumasi",
+    scoreContextTitle: "Urun Baglami",
+    assistantEyebrow: "Akilli Kiyafet Asistani",
+    assistantTitle: "Bu urun fiyatina deger mi?",
+    assistantEmpty: "Fiyat, kumas ve surdurulebilirlik tavsiyesi almak icin analiz calistir.",
+    assistantThinking: "Kumas, fiyat ve surdurulebilirlik sinyalleri inceleniyor.",
+    assistantReady: "Tavsiye hazir",
+    assistantUnavailable: "Asistan kullanilamiyor",
+    assistantFallbackNotice: "Secilen AI saglayicisi kullanilabilir cevap dondurmedi; FabricIQ yerel tavsiye mantigini kullandi.",
+    assistantPlaceholder: "Fiyat, konfor veya surdurulebilirlik hakkinda sor...",
+    assistantButton: "Sor",
     scoreValidUrl: "Bilesim tanindi ve kalite skoru hesaplandi.",
     scoreValidOcr: "Etiket verisi OCR ile okundu. Guven: %{confidence}.",
     scoreInvalid: "Bilesim guvenilir sayilmadan once kontrol edilmeli.",
@@ -260,11 +297,127 @@ function formatPrice(price) {
   }
 }
 
+function setAssistantEmpty() {
+  assistantBadge.textContent = t("waiting");
+  assistantBody.classList.remove("loading");
+  assistantBody.innerHTML = `<p class="empty-state">${t("assistantEmpty")}</p>`;
+}
+
+function setAssistantLoading() {
+  assistantBadge.textContent = t("analyzing");
+  assistantBody.classList.add("loading");
+  assistantBody.innerHTML = `
+    <div class="assistant-skeleton">
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+    <p class="empty-state">${t("assistantThinking")}</p>
+  `;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function renderAssistantMarkdown(paragraph) {
+  return escapeHtml(paragraph).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+
+function renderAssistantText(text, provider = "", warning = "") {
+  const paragraphs = String(text || "")
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+  const isFallback = provider === "local_fallback";
+  const notice = warning || (isFallback ? t("assistantFallbackNotice") : "");
+
+  assistantBadge.textContent = provider && !isFallback ? provider : t("assistantReady");
+  assistantBody.classList.remove("loading");
+  const recommendationHtml = paragraphs.length
+    ? paragraphs.map((paragraph) => `<p>${renderAssistantMarkdown(paragraph).replace(/\n/g, "<br>")}</p>`).join("")
+    : `<p class="empty-state">${t("assistantUnavailable")}</p>`;
+  assistantBody.innerHTML = notice
+    ? `<p class="assistant-warning">${escapeHtml(notice)}</p>${recommendationHtml}`
+    : recommendationHtml;
+}
+
+function renderAssistantError() {
+  assistantBadge.textContent = t("assistantUnavailable");
+  assistantBody.classList.remove("loading");
+  assistantBody.innerHTML = `<p class="empty-state">${t("assistantUnavailable")}</p>`;
+}
+
+function selectedAssistantModel() {
+  const model = assistantModel.value || "gemini-3-flash-preview";
+  return { model };
+}
+
+function buildAssistantPayload(data, sourceLabel, question = "") {
+  const fabric = data.fabric || {};
+  const score = data.score || {};
+  const price = data.price || {};
+  const compositionEntries = Array.isArray(fabric.composition) ? fabric.composition : [];
+  const fabricComposition = Object.fromEntries(
+    compositionEntries
+      .filter((item) => item && item.fabric && item.ratio != null)
+      .map((item) => [item.fabric, Number(item.ratio)]),
+  );
+  const modelChoice = selectedAssistantModel();
+
+  return {
+    product_name: data.product_name || data.url || translatedSource(sourceLabel),
+    price: price.amount == null ? null : Number(price.amount),
+    fabric_composition: fabricComposition,
+    quality_score: score.quality_score ?? score.grade ?? null,
+    grade: score.grade || null,
+    natural_ratio: Number(score.natural_ratio || 0),
+    synthetic_ratio: Number(score.synthetic_ratio || 0),
+    scoring_notes: Array.isArray(score.scoring_notes) ? score.scoring_notes : [],
+    rag_database_notes: data.product_type ? [`Ürün tipi: ${data.product_type}`] : [],
+    question: question.trim() || null,
+    model: modelChoice.model,
+  };
+}
+
+async function requestAssistantRecommendation(data, sourceLabel, question = "") {
+  const fabric = data.fabric || {};
+  if (!fabric.is_valid || !Array.isArray(fabric.composition) || !fabric.composition.length) {
+    setAssistantEmpty();
+    return;
+  }
+
+  setAssistantLoading();
+  try {
+    const response = await fetch("/assistant/recommend", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildAssistantPayload(data, sourceLabel, question)),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.success === false) {
+      renderAssistantError();
+      return;
+    }
+    renderAssistantText(payload.recommendation, payload.provider, payload.warning);
+  } catch {
+    renderAssistantError();
+  }
+}
+
 function updateStaticText() {
   document.documentElement.lang = activeLanguage;
 
   document.querySelectorAll("[data-i18n]").forEach((element) => {
     element.textContent = t(element.dataset.i18n);
+  });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((element) => {
+    element.placeholder = t(element.dataset.i18nPlaceholder);
   });
 
   languageButtons.forEach((button) => {
@@ -470,6 +623,7 @@ function resetResults() {
   insightBadge.textContent = t("waiting");
   compositionList.innerHTML = `<p class="empty-state">${t("compositionEmpty")}</p>`;
   insightList.innerHTML = `<p class="empty-state">${t("insightEmpty")}</p>`;
+  setAssistantEmpty();
   setActivity(t("ready"), t("readyActivity"), activeMode === "url" ? t("productUrl") : t("labelOcr"));
   clearMessage();
 }
@@ -526,6 +680,17 @@ function renderInsights(score, fabric, confidence, source) {
         fabric: fabricLabels[topFabric.fabric] || topFabric.fabric,
         ratio: topFabric.ratio,
       }),
+    });
+  }
+
+  if (Array.isArray(score.scoring_notes)) {
+    score.scoring_notes.forEach((note) => {
+      if (note) {
+        items.push({
+          title: t("scoreContextTitle"),
+          text: note,
+        });
+      }
     });
   }
 
@@ -629,6 +794,8 @@ function renderResult(data, sourceLabel, options = {}) {
     pushHistory(data, sourceLabel);
   }
 
+  requestAssistantRecommendation(data, sourceLabel);
+
   const guidance = data.advice || fabric.warning;
   if ((!fabric.is_valid || data.advice) && guidance) {
     showMessage(guidance, "warning");
@@ -653,6 +820,28 @@ labelModeButton.addEventListener("click", () => setMode("label"));
 
 labelInput.addEventListener("change", () => {
   fileName.textContent = labelInput.files[0]?.name || t("noFile");
+});
+
+assistantChatForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const question = assistantQuestion.value.trim();
+  if (!latestResult || !question) {
+    return;
+  }
+
+  setButtonLoading(assistantButton, true, t("analyzing"), t("assistantButton"));
+  try {
+    await requestAssistantRecommendation(latestResult, latestSourceLabel, question);
+    assistantQuestion.value = "";
+  } finally {
+    setButtonLoading(assistantButton, false, t("analyzing"), t("assistantButton"));
+  }
+});
+
+assistantModel.addEventListener("change", () => {
+  if (latestResult) {
+    requestAssistantRecommendation(latestResult, latestSourceLabel);
+  }
 });
 
 urlForm.addEventListener("submit", async (event) => {
@@ -694,6 +883,7 @@ labelForm.addEventListener("submit", async (event) => {
 
   const formData = new FormData();
   formData.append("file", labelInput.files[0]);
+  formData.append("product_type", labelProductType.value || "general");
   setActivity(t("analyzing"), t("activityLabelAnalyzing"), t("labelOcr"), t("ocrRunning"));
   setButtonLoading(labelButton, true, t("analyzing"), t("labelButton"));
 

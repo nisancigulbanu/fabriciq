@@ -40,7 +40,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -406,6 +407,22 @@ input:focus {
   background: transparent;
 }
 
+select {
+  min-height: 50px;
+  border: 1px solid rgba(22, 27, 24, 0.12);
+  border-radius: 999px;
+  padding: 0 18px;
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--ink);
+  font-weight: 800;
+  outline: none;
+}
+
+select:focus {
+  border-color: var(--sage);
+  box-shadow: 0 0 0 4px rgba(112, 131, 109, 0.12);
+}
+
 input[type="file"] {
   padding: 14px 18px;
 }
@@ -620,6 +637,96 @@ input[type="file"] {
   margin-bottom: 8px;
 }
 
+.assistant-panel {
+  display: grid;
+  gap: 18px;
+  padding: 44px 0 28px;
+  border-top: 1px solid rgba(22, 27, 24, 0.08);
+}
+
+.assistant-panel .section-heading {
+  align-items: start;
+}
+
+.assistant-body {
+  display: grid;
+  gap: 14px;
+  max-width: 920px;
+  color: color-mix(in srgb, var(--ink) 82%, var(--mineral));
+  font-size: 16px;
+  line-height: 1.75;
+}
+
+.assistant-body p {
+  margin: 0;
+  padding: 16px 18px;
+  border-top: 1px solid rgba(22, 27, 24, 0.1);
+  background: linear-gradient(90deg, rgba(112, 131, 109, 0.08), transparent 70%);
+}
+
+.assistant-body .empty-state {
+  padding-left: 0;
+  background: transparent;
+}
+
+.assistant-body .assistant-warning {
+  border: 1px solid rgba(67, 100, 107, 0.18);
+  border-radius: 8px;
+  background: rgba(245, 247, 241, 0.95);
+  color: var(--mineral);
+  font-size: 0.92rem;
+}
+
+.assistant-skeleton {
+  display: grid;
+  gap: 10px;
+  max-width: 720px;
+}
+
+.assistant-skeleton span {
+  display: block;
+  height: 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    rgba(112, 131, 109, 0.12),
+    rgba(50, 79, 85, 0.2),
+    rgba(112, 131, 109, 0.12)
+  );
+  background-size: 220% 100%;
+  animation: assistantShimmer 1.1s linear infinite;
+}
+
+.assistant-skeleton span:nth-child(2) {
+  width: 86%;
+}
+
+.assistant-skeleton span:nth-child(3) {
+  width: 62%;
+}
+
+.assistant-chat {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.28fr) minmax(0, 1fr) auto;
+  gap: 12px;
+  max-width: 920px;
+  padding-top: 8px;
+}
+
+.assistant-chat input {
+  min-height: 50px;
+  border: 1px solid rgba(22, 27, 24, 0.12);
+  border-radius: 999px;
+  padding: 0 20px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.assistant-chat input:focus {
+  border-color: var(--sage);
+  box-shadow: 0 0 0 4px rgba(112, 131, 109, 0.12);
+}
+
 .insight-item p,
 .history-item p {
   margin-bottom: 0;
@@ -680,6 +787,15 @@ input[type="file"] {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes assistantShimmer {
+  0% {
+    background-position: 220% 0;
+  }
+  100% {
+    background-position: -220% 0;
   }
 }
 
@@ -753,7 +869,8 @@ input[type="file"] {
   .upload-meta,
   .summary-grid,
   .live-meta,
-  .score-panel {
+  .score-panel,
+  .assistant-chat {
     grid-template-columns: 1fr;
   }
 
