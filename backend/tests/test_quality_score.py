@@ -71,6 +71,20 @@ def test_polo_tshirt_url_slug_scores_as_tshirt_not_activewear() -> None:
     assert result["grade"] == "B"
 
 
+def test_baby_zibin_url_slug_scores_as_baby_kids_before_tshirt() -> None:
+    """Prioritize explicit baby/kids signals over generic t-shirt or underwear page text."""
+    result = calculate_quality_score(
+        [{"fabric": "pamuk", "ratio": 100}],
+        product_context=(
+            "https://www.trendyol.com/mai-perla/"
+            "unisex-bebek-sari-arili-3-lu-zibin-takimi-p-110574796?boutiqueId=61 "
+            "tshirt underwear"
+        ),
+    )
+
+    assert result["score_details"]["product_type"] == "baby_kids"
+
+
 def test_polyester_scores_low_for_knitwear_and_better_for_outerwear() -> None:
     """Score the same fiber differently by product context."""
     knitwear = calculate_quality_score(

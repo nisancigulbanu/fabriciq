@@ -295,6 +295,8 @@ PRODUCT_TYPE_KEYWORDS: dict[str, set[str]] = {
     "home_textile": {"çarşaf", "carsaf", "nevresim", "sheet", "home", "textile"},
 }
 
+PRODUCT_TYPE_KEYWORDS["baby_kids"].update({"zibin"})
+
 PRODUCT_TYPE_ALIASES = {
     "winter": "knitwear",
     "underwear": "tshirt_underwear",
@@ -380,6 +382,7 @@ def _normalize_product_type(product_context: str | None) -> str:
 
     context_tokens = _tokens(context)
     product_type_priority = (
+        "baby_kids",
         "tshirt_underwear",
         "shirt_blouse",
         "denim",
@@ -388,7 +391,6 @@ def _normalize_product_type(product_context: str | None) -> str:
         "swimwear",
         "socks",
         "officewear",
-        "baby_kids",
         "home_textile",
         "activewear",
     )
