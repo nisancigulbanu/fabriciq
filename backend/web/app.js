@@ -162,13 +162,13 @@ const translations = {
     scoreDetailsText: "Performance {performance}, sustainability {sustainability}, final {final}. Category: {category}.",
     assistantEyebrow: "Smart Clothing Assistant",
     assistantTitle: "Is this product worth it?",
-    assistantEmpty: "Run an analysis to receive a price, fabric, and sustainability recommendation.",
+    assistantEmpty: "Run an analysis, then ask a question or get a recommendation when you need AI advice.",
     assistantThinking: "Reviewing fabric, price, and sustainability signals.",
     assistantReady: "Recommendation ready",
     assistantUnavailable: "Assistant unavailable",
     assistantFallbackNotice: "The selected AI provider did not return a usable response, so FabricIQ used its local recommendation logic.",
     assistantPlaceholder: "Ask about price, comfort, or sustainability...",
-    assistantButton: "Ask",
+    assistantButton: "Get Advice",
     scoreValidUrl: "The composition was recognized and the quality score has been calculated.",
     scoreValidOcr: "Label data was read through OCR. Confidence: {confidence}%.",
     scoreInvalid: "The composition needs review before the result can be trusted.",
@@ -267,13 +267,13 @@ const translations = {
     scoreDetailsText: "Performans {performance}, surdurulebilirlik {sustainability}, nihai {final}. Kategori: {category}.",
     assistantEyebrow: "Akilli Kiyafet Asistani",
     assistantTitle: "Bu urun fiyatina deger mi?",
-    assistantEmpty: "Fiyat, kumas ve surdurulebilirlik tavsiyesi almak icin analiz calistir.",
+    assistantEmpty: "Analiz calistirdiktan sonra AI tavsiyesi gerektiginde soru sor veya tavsiye al.",
     assistantThinking: "Kumas, fiyat ve surdurulebilirlik sinyalleri inceleniyor.",
     assistantReady: "Tavsiye hazir",
     assistantUnavailable: "Asistan kullanilamiyor",
     assistantFallbackNotice: "Secilen AI saglayicisi kullanilabilir cevap dondurmedi; FabricIQ yerel tavsiye mantigini kullandi.",
     assistantPlaceholder: "Fiyat, konfor veya surdurulebilirlik hakkinda sor...",
-    assistantButton: "Sor",
+    assistantButton: "Tavsiye Al",
     scoreValidUrl: "Bilesim tanindi ve kalite skoru hesaplandi.",
     scoreValidOcr: "Etiket verisi OCR ile okundu. Guven: %{confidence}.",
     scoreInvalid: "Bilesim guvenilir sayilmadan once kontrol edilmeli.",
@@ -921,7 +921,7 @@ function renderResult(data, sourceLabel, options = {}) {
     pushHistory(data, sourceLabel);
   }
 
-  requestAssistantRecommendation(data, sourceLabel);
+  setAssistantEmpty();
 
   const guidance = data.advice || fabric.warning;
   if ((!fabric.is_valid || data.advice) && guidance) {
@@ -952,7 +952,7 @@ labelInput.addEventListener("change", () => {
 assistantChatForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const question = assistantQuestion.value.trim();
-  if (!latestResult || !question) {
+  if (!latestResult) {
     return;
   }
 
@@ -962,12 +962,6 @@ assistantChatForm.addEventListener("submit", async (event) => {
     assistantQuestion.value = "";
   } finally {
     setButtonLoading(assistantButton, false, t("analyzing"), t("assistantButton"));
-  }
-});
-
-assistantModel.addEventListener("change", () => {
-  if (latestResult) {
-    requestAssistantRecommendation(latestResult, latestSourceLabel);
   }
 });
 
