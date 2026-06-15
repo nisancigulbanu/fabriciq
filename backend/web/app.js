@@ -160,6 +160,7 @@ const translations = {
     fiberBalanceTitle: "Fiber Balance",
     sourceReadTitle: "Source Read",
     scoreContextTitle: "Product Context",
+    scoreContextAutoGeneral: "Product type could not be auto-detected, so the score used the General / Everyday context. You can select a product type manually for a more specific score.",
     scoreDetailsTitle: "Score Model",
     scoreDetailsText: "Performance {performance}, sustainability {sustainability}, final {final}. Category: {category}.",
     assistantEyebrow: "Smart Clothing Assistant",
@@ -174,6 +175,8 @@ const translations = {
     scoreValidUrl: "The composition was recognized and the quality score has been calculated.",
     scoreValidOcr: "Label data was read through OCR. Confidence: {confidence}%.",
     scoreInvalid: "The composition needs review before the result can be trusted.",
+    scoreInvalidOcrWithConfidence: "OCR confidence: {confidence}%. Fabric ratios could not be trusted. {advice}",
+    scoreInvalidOcrNoConfidence: "Fabric ratios could not be trusted. {advice}",
     activityUrlAnalyzing: "Reading the product page and parsing fabric composition.",
     activityLabelAnalyzing: "Running OCR on the label image and extracting the composition.",
     activityComplete: "{source} session finished and the dashboard has been updated.",
@@ -266,6 +269,7 @@ const translations = {
     fiberBalanceTitle: "Lif Dengesi",
     sourceReadTitle: "Kaynak Okumasi",
     scoreContextTitle: "Urun Baglami",
+    scoreContextAutoGeneral: "Urun tipi otomatik algilanamadi; skor Genel / Gunluk baglamiyla hesaplandi. Daha ozgun bir skor icin urun tipini manuel secebilirsiniz.",
     scoreDetailsTitle: "Skor Modeli",
     scoreDetailsText: "Performans {performance}, surdurulebilirlik {sustainability}, nihai {final}. Kategori: {category}.",
     assistantEyebrow: "Akilli Kiyafet Asistani",
@@ -280,6 +284,8 @@ const translations = {
     scoreValidUrl: "Bilesim tanindi ve kalite skoru hesaplandi.",
     scoreValidOcr: "Etiket verisi OCR ile okundu. Guven: %{confidence}.",
     scoreInvalid: "Bilesim guvenilir sayilmadan once kontrol edilmeli.",
+    scoreInvalidOcrWithConfidence: "OCR guveni: %{confidence}. Kumas oranlari guvenilir bulunamadi. {advice}",
+    scoreInvalidOcrNoConfidence: "Kumas oranlari guvenilir bulunamadi. {advice}",
     activityUrlAnalyzing: "Urun sayfasi okunuyor ve kumas bilesimi parse ediliyor.",
     activityLabelAnalyzing: "Etiket fotografi OCR ile okunuyor ve bilesim cikariliyor.",
     activityComplete: "{source} oturumu tamamlandi ve dashboard guncellendi.",
@@ -750,7 +756,7 @@ function renderComposition(composition) {
   }
 }
 
-function renderInsights(score, fabric, confidence, source) {
+function renderInsights(score, fabric, confidence, source, data = {}) {
   const natural = Number(score.natural_ratio || 0);
   const synthetic = Number(score.synthetic_ratio || 0);
   const qualityScore = Number(score.quality_score || 0);
@@ -793,6 +799,17 @@ function renderInsights(score, fabric, confidence, source) {
         final: score.score_details.final_score ?? qualityScore,
         category: score.score_details.category || "-",
       }),
+    });
+  }
+
+  if (
+    sourceKey(source) === "productUrl"
+    && data.product_type_mode === "auto"
+    && (data.detected_product_type === "general" || data.product_type === "general")
+  ) {
+    items.push({
+      title: t("scoreContextTitle"),
+      text: t("scoreContextAutoGeneral"),
     });
   }
 
@@ -883,7 +900,9 @@ function renderResult(data, sourceLabel, options = {}) {
   const fabric = data.fabric || {};
   const ocr = data.ocr || {};
   const qualityScore = Number(score.quality_score || 0);
-  const confidence = Number(ocr.avg_confidence || 0);
+  const rawOcrConfidence = Number(ocr.avg_confidence || 0);
+  const analysisConfidence = Number(data.confidence_score || 0) * 100;
+  const confidence = fabric.is_valid ? rawOcrConfidence : analysisConfidence;
 
   latestResult = data;
   latestSourceLabel = sourceLabel;
@@ -895,11 +914,19 @@ function renderResult(data, sourceLabel, options = {}) {
   sustainabilityScoreValue.textContent = formatScoreMetric(score.score_details?.sustainability_score);
   finalScoreValue.textContent = formatScoreMetric(score.score_details?.final_score ?? qualityScore);
   breakdownGradeValue.textContent = score.grade || "F";
-  scoreNote.textContent = fabric.is_valid
-    ? sourceKey(sourceLabel) === "labelOcr" && confidence > 0
+  const isLabelOcr = sourceKey(sourceLabel) === "labelOcr";
+  const guidance = data.advice || fabric.warning || t("scoreInvalid");
+  if (fabric.is_valid) {
+    scoreNote.textContent = isLabelOcr && confidence > 0
       ? t("scoreValidOcr", { confidence: Math.round(confidence) })
-      : t("scoreValidUrl")
-    : data.advice || t("scoreInvalid");
+      : t("scoreValidUrl");
+  } else if (isLabelOcr) {
+    scoreNote.textContent = confidence > 0
+      ? t("scoreInvalidOcrWithConfidence", { confidence: Math.round(confidence), advice: guidance })
+      : t("scoreInvalidOcrNoConfidence", { advice: guidance });
+  } else {
+    scoreNote.textContent = guidance;
+  }
 
   naturalRatio.textContent = `${score.natural_ratio || 0}%`;
   syntheticRatio.textContent = `${score.synthetic_ratio || 0}%`;
@@ -909,7 +936,7 @@ function renderResult(data, sourceLabel, options = {}) {
   validityBadge.textContent = fabric.is_valid ? t("validComposition") : t("needsReview");
 
   renderComposition(fabric.composition || []);
-  renderInsights(score, fabric, confidence, sourceLabel);
+  renderInsights(score, fabric, confidence, sourceLabel, data);
 
   setActivity(
     fabric.is_valid ? t("complete") : t("review"),
@@ -917,7 +944,7 @@ function renderResult(data, sourceLabel, options = {}) {
       ? t("activityComplete", { source: translatedSource(sourceLabel) })
       : t("activityReview", { source: translatedSource(sourceLabel) }),
     translatedSource(sourceLabel),
-    confidence > 0 ? `${Math.round(confidence)}%` : sourceKey(sourceLabel) === "labelOcr" ? t("lowNA") : t("parsedPage"),
+    confidence > 0 ? `${Math.round(confidence)}%` : isLabelOcr ? t("lowNA") : t("parsedPage"),
   );
 
   if (!options.skipHistory) {
@@ -926,8 +953,7 @@ function renderResult(data, sourceLabel, options = {}) {
 
   setAssistantEmpty();
 
-  const guidance = data.advice || fabric.warning;
-  if ((!fabric.is_valid || data.advice) && guidance) {
+  if (!isLabelOcr && (!fabric.is_valid || data.advice) && guidance) {
     showMessage(guidance, "warning");
   } else {
     clearMessage();
@@ -980,7 +1006,7 @@ urlForm.addEventListener("submit", async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         url: urlInput.value.trim(),
-        product_type: urlProductType.value || "general",
+        product_type: urlProductType.value || "auto",
       }),
     });
     const payload = await response.json();
@@ -1021,7 +1047,7 @@ labelForm.addEventListener("submit", async (event) => {
     });
     const payload = await response.json();
 
-    if (!response.ok || payload.success === false) {
+    if (!response.ok) {
       renderError(payload);
       return;
     }

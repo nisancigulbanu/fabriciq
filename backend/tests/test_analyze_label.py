@@ -10,7 +10,12 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+fake_easyocr = types.ModuleType("easyocr")
+fake_easyocr.Reader = object
+sys.modules.setdefault("easyocr", fake_easyocr)
+
 from backend.main import app
+from backend.ocr.engine import _has_fabric_hint, _looks_like_lmstudio_prompt_echo
 
 
 @pytest.fixture
@@ -23,6 +28,18 @@ def client() -> TestClient:
 
     httpx.Client.__init__ = patched_init  # type: ignore[assignment]
     return TestClient(app)
+
+
+def test_lmstudio_prompt_echo_is_not_accepted_as_ocr_text() -> None:
+    """Reject model responses that repeat the OCR instruction instead of reading the image."""
+    prompt_echo = (
+        "Bu bir kiyafet etiketi OCR gorevidir. "
+        "Gorseldeki etikette yazan tum metni birebir oku ve sadece ham metin olarak dondur."
+    )
+
+    assert _looks_like_lmstudio_prompt_echo(prompt_echo) is True
+    assert _looks_like_lmstudio_prompt_echo("100% Cotton\nWash at 30C") is False
+    assert _has_fabric_hint("100% Cotton\nWash at 30C") is True
 
 
 def _install_fake_pipeline(
@@ -208,6 +225,13 @@ def _install_fake_url_pipeline(
     ) -> dict[str, object]:
         captured["composition"] = composition
         captured["product_context"] = product_context
+        context_text = str(product_context or "")
+        if context_text.startswith("activewear"):
+            scored_product_type = "activewear"
+        elif "polo" in context_text:
+            scored_product_type = "tshirt_underwear"
+        else:
+            scored_product_type = "general"
         return {
             "quality_score": 53,
             "grade": "F",
@@ -219,7 +243,7 @@ def _install_fake_url_pipeline(
                 "sustainability_score": 53.0,
                 "final_score": 53.0,
                 "category": "Düşük",
-                "product_type": "general",
+                "product_type": scored_product_type,
                 "formula_version": "kp_sp_v1",
             },
         }
@@ -383,6 +407,86 @@ def test_analyze_label_uses_best_preprocessing_variant(
     assert response_json["fabric"]["is_valid"] is True
     assert response_json["advice"] is None
     assert captured["ocr_calls"] == ["bad-image", "good-image"]
+
+
+def test_analyze_label_returns_early_when_lmstudio_reads_complete_label(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skip slower OCR variants when LM Studio returns a complete valid composition."""
+    captured: dict[str, object] = {"preprocess_called": False, "easyocr_called": False}
+
+    fake_preprocessor = types.ModuleType("ocr.preprocessor")
+
+    def preprocess_image_variants(image_path: str):  # type: ignore[no-untyped-def]
+        captured["preprocess_called"] = True
+        return [("default", "processed-image")]
+
+    fake_preprocessor.preprocess_image_variants = preprocess_image_variants
+
+    fake_engine = types.ModuleType("ocr.engine")
+    fake_engine.run_lmstudio_ocr_from_path = lambda image_path: {
+        "raw_text": "100% Cotton",
+        "confident_text": "100% Cotton",
+        "avg_confidence": 90.0,
+    }
+
+    def extract_text_from_image(processed_image: str):  # type: ignore[no-untyped-def]
+        captured["easyocr_called"] = True
+        return {
+            "raw_text": "",
+            "confident_text": "",
+            "avg_confidence": 0.0,
+        }
+
+    fake_engine.extract_text_from_image = extract_text_from_image
+
+    from backend.ocr.fabric_parser import parse_fabric_composition
+
+    fake_parser = types.ModuleType("ocr.fabric_parser")
+    fake_parser.parse_fabric_composition = parse_fabric_composition
+
+    fake_scorer = types.ModuleType("scoring.quality_score")
+    fake_scorer.calculate_quality_score = lambda parsed_composition, product_context=None: {
+        "quality_score": 71,
+        "grade": "B",
+        "natural_ratio": 100,
+        "synthetic_ratio": 0,
+        "scoring_notes": [],
+        "score_details": {
+            "performance_score": 86.4,
+            "sustainability_score": 48.0,
+            "final_score": 71.0,
+            "category": "İyi",
+            "product_type": "general",
+            "formula_version": "kp_sp_v1",
+        },
+    }
+
+    fake_paddle_engine = types.ModuleType("ocr.engine_paddle")
+    fake_paddle_engine.run_paddleocr = lambda processed_image: {
+        "raw_text": "",
+        "confident_text": "",
+        "avg_confidence": 0.0,
+    }
+
+    monkeypatch.setitem(sys.modules, "backend.ocr.preprocessor", fake_preprocessor)
+    monkeypatch.setitem(sys.modules, "backend.ocr.engine", fake_engine)
+    monkeypatch.setitem(sys.modules, "backend.ocr.engine_paddle", fake_paddle_engine)
+    monkeypatch.setitem(sys.modules, "backend.ocr.fabric_parser", fake_parser)
+    monkeypatch.setitem(sys.modules, "backend.scoring.quality_score", fake_scorer)
+
+    response = client.post(
+        "/analyze/label",
+        files={"file": ("label.jpg", b"fake-image-bytes", "image/jpeg")},
+    )
+
+    response_json = response.json()
+    assert response.status_code == 200
+    assert response_json["success"] is True
+    assert response_json["fabric"]["composition"] == [{"fabric": "pamuk", "ratio": 100}]
+    assert captured["preprocess_called"] is False
+    assert captured["easyocr_called"] is False
 
 
 def test_analyze_label_returns_advice_for_valid_low_confidence_result(
@@ -567,6 +671,50 @@ def test_analyze_url_returns_success_for_static_page(client: TestClient, monkeyp
     assert captured["url"] == "https://example.com/product"
     assert captured["text_to_parse"] == "60% Cotton 40% Polyester"
     assert "https://example.com/product" in str(captured["product_context"])
+    assert response_json["product_type_mode"] == "auto"
+    assert response_json["context_advice"]
+
+
+def test_analyze_url_auto_detects_product_type_from_slug(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Report the product type inferred from URL context when automatic mode is used."""
+    captured = _install_fake_url_pipeline(monkeypatch, scraped_text="60% Cotton 40% Polyester")
+
+    response = client.post("/analyze/url", json={"url": "https://example.com/polo-tisort"})
+
+    assert response.status_code == 200
+    response_json = response.json()
+    assert response_json["product_type"] == "tshirt_underwear"
+    assert response_json["detected_product_type"] == "tshirt_underwear"
+    assert response_json["product_type_mode"] == "auto"
+    assert response_json["context_advice"] is None
+    assert "polo tisort" in str(captured["product_context"])
+
+
+def test_analyze_url_uses_manual_general_without_auto_context(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Allow users to explicitly choose neutral general scoring for URL analysis."""
+    captured = _install_fake_url_pipeline(monkeypatch, scraped_text="60% Cotton 40% Polyester")
+
+    response = client.post(
+        "/analyze/url",
+        json={
+            "url": "https://example.com/polo-tisort",
+            "product_type": "general",
+        },
+    )
+
+    assert response.status_code == 200
+    response_json = response.json()
+    assert response_json["product_type"] == "general"
+    assert response_json["selected_product_type"] == "general"
+    assert response_json["product_type_mode"] == "manual"
+    assert response_json["detected_product_type"] is None
+    assert captured["product_context"] is None
 
 
 def test_analyze_url_uses_selected_product_type_override(

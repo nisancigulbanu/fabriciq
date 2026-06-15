@@ -187,6 +187,9 @@ NO_FABRIC_MESSAGE = (
 URL_FABRIC_NOT_FOUND_MESSAGE = (
     "Bu urun sayfasindan kumas bilgisi otomatik alinamadi. Etiket fotografi yukleyebilirsiniz."
 )
+URL_PRODUCT_CONTEXT_NOT_FOUND_MESSAGE = (
+    "Urun tipi otomatik algilanamadi; skor Genel / Gunluk baglamiyla hesaplandi. Daha ozgun bir skor icin urun tipini manuel secebilirsiniz."
+)
 
 
 def _empty_ocr_result() -> dict[str, str | float]:
@@ -339,6 +342,21 @@ def _url_product_context(url: str, scraped_text: str) -> str:
     slug_text = " ".join(part for part in parsed.path.split("/") if part)
     slug_text = unquote(slug_text).replace("-", " ").replace("_", " ")
     return f"url_product_hint {slug_text}\n{url}\n{scraped_text}"
+
+
+def _is_auto_product_type(product_type: str | None) -> bool:
+    """Return true when URL analysis should infer product type from page data."""
+    return (product_type or "").strip().lower() in {"", "auto"}
+
+
+def _score_product_type(score_result: dict[str, object]) -> str:
+    """Read the product type selected by the scoring model."""
+    score_details = score_result.get("score_details")
+    if isinstance(score_details, dict):
+        product_type = str(score_details.get("product_type") or "").strip()
+        if product_type:
+            return _normalize_product_type(product_type)
+    return "general"
 
 
 def _debug_relevant_lines(text: str) -> list[str]:
@@ -757,6 +775,51 @@ def _is_confident_complete_label_result(
     return True
 
 
+def _build_label_response(
+    *,
+    ocr_result: dict[str, object],
+    fabric_result: dict[str, object],
+    score_result: dict[str, object],
+    product_type: str,
+    advice: str | None,
+    candidate_results: list[
+        tuple[
+            tuple[int, int, float, float, int],
+            dict[str, str | float],
+            dict[str, object],
+            dict[str, object],
+        ]
+    ],
+) -> dict[str, object]:
+    """Build the public label analysis response."""
+    if not fabric_result.get("composition"):
+        advice = NO_FABRIC_MESSAGE
+
+    best_signature = _composition_signature(fabric_result.get("composition"))
+    agreement_count = sum(
+        1
+        for _, _, candidate_fabric, _ in candidate_results
+        if best_signature and _composition_signature(candidate_fabric.get("composition")) == best_signature
+    )
+    public_fields = _build_public_analysis_fields(
+        source="ocr",
+        raw_text=str(ocr_result.get("raw_text") or ocr_result.get("confident_text") or ""),
+        fabric_result=fabric_result,
+        ocr_result=ocr_result,
+        agreement_count=agreement_count,
+    )
+
+    return {
+        "success": bool(fabric_result.get("composition") and fabric_result.get("is_valid")),
+        "ocr": ocr_result,
+        "fabric": fabric_result,
+        "score": score_result,
+        "advice": advice,
+        "product_type": product_type,
+        **public_fields,
+    }
+
+
 LABEL_UPLOAD_OPENAPI_EXTRA = {
     "requestBody": {
         "content": {
@@ -1058,6 +1121,8 @@ async def analyze_label(request: Request) -> object:
                 fabric_result.get("total_ratio"),
                 fabric_result.get("warning"),
             )
+            if not fabric_result.get("is_valid"):
+                lmstudio_result = {**lmstudio_result, "avg_confidence": 0.0}
             score_result = _score_if_valid(fabric_result, calculate_quality_score, product_context=product_context)
             candidate_results.append(
                 (
@@ -1068,6 +1133,15 @@ async def analyze_label(request: Request) -> object:
                 )
             )
             best_result = candidate_results[-1]
+            if _is_confident_complete_label_result(lmstudio_result, fabric_result):
+                return _build_label_response(
+                    ocr_result=lmstudio_result,
+                    fabric_result=fabric_result,
+                    score_result=score_result,
+                    product_type=product_type,
+                    advice=_build_label_advice(lmstudio_result, fabric_result),
+                    candidate_results=candidate_results,
+                )
 
         for _, processed_image in preprocess_image_variants(temp_path):
             if best_result is not None and time.perf_counter() - analysis_started_at > LABEL_OCR_TIME_BUDGET_SECONDS:
@@ -1199,32 +1273,15 @@ async def analyze_label(request: Request) -> object:
         advice = _build_label_advice(ocr_result, fabric_result)
         if timed_out and advice is None:
             advice = LABEL_CAPTURE_ADVICE
-        if not fabric_result.get("composition"):
-            advice = NO_FABRIC_MESSAGE
 
-        best_signature = _composition_signature(fabric_result.get("composition"))
-        agreement_count = sum(
-            1
-            for _, _, candidate_fabric, _ in candidate_results
-            if best_signature and _composition_signature(candidate_fabric.get("composition")) == best_signature
-        )
-        public_fields = _build_public_analysis_fields(
-            source="ocr",
-            raw_text=str(ocr_result.get("raw_text") or ocr_result.get("confident_text") or ""),
-            fabric_result=fabric_result,
+        return _build_label_response(
             ocr_result=ocr_result,
-            agreement_count=agreement_count,
+            fabric_result=fabric_result,
+            score_result=score_result,
+            product_type=product_type,
+            advice=advice,
+            candidate_results=candidate_results,
         )
-
-        return {
-            "success": bool(fabric_result.get("composition") and fabric_result.get("is_valid")),
-            "ocr": ocr_result,
-            "fabric": fabric_result,
-            "score": score_result,
-            "advice": advice,
-            "product_type": product_type,
-            **public_fields,
-        }
     except FileNotFoundError as exc:
         return _error_response(str(exc), status_code=404, code="file_not_found", detail=str(exc))
     except ValueError as exc:
@@ -1268,16 +1325,23 @@ async def analyze_url(request: UrlRequest) -> object:
             }
         scraped_text = str(extraction.get("raw_text") or "")
         fabric_result = parse_fabric_composition(scraped_text)
-        product_type = _normalize_product_type(request.product_type)
+        auto_product_type = _is_auto_product_type(request.product_type)
+        selected_product_type = "auto" if auto_product_type else _normalize_product_type(request.product_type)
         score_context = (
-            _label_product_context(product_type)
-            if product_type != "general"
-            else _url_product_context(request.url, scraped_text)
+            _url_product_context(request.url, scraped_text)
+            if auto_product_type
+            else _label_product_context(selected_product_type)
         )
         score_result = _score_if_valid(
             fabric_result,
             calculate_quality_score,
             product_context=score_context,
+        )
+        resolved_product_type = _score_product_type(score_result) if auto_product_type else selected_product_type
+        context_advice = (
+            URL_PRODUCT_CONTEXT_NOT_FOUND_MESSAGE
+            if auto_product_type and resolved_product_type == "general"
+            else None
         )
         if not fabric_result.get("composition") or not fabric_result.get("is_valid"):
             return JSONResponse(
@@ -1290,7 +1354,11 @@ async def analyze_url(request: UrlRequest) -> object:
                     "advice": URL_FABRIC_NOT_FOUND_MESSAGE,
                     "source": extraction.get("source") or "url",
                     "url": request.url,
-                    "product_type": product_type,
+                    "product_type": resolved_product_type,
+                    "product_type_mode": "auto" if auto_product_type else "manual",
+                    "selected_product_type": selected_product_type,
+                    "detected_product_type": resolved_product_type if auto_product_type else None,
+                    "context_advice": context_advice,
                     "raw_text": scraped_text,
                     "fabric_candidates": extraction.get("fabric_candidates") or [],
                     "price": extraction.get("price"),
@@ -1314,7 +1382,11 @@ async def analyze_url(request: UrlRequest) -> object:
             "score": score_result,
             "advice": None,
             "url": request.url,
-            "product_type": product_type,
+            "product_type": resolved_product_type,
+            "product_type_mode": "auto" if auto_product_type else "manual",
+            "selected_product_type": selected_product_type,
+            "detected_product_type": resolved_product_type if auto_product_type else None,
+            "context_advice": context_advice,
             "fabric_candidates": extraction.get("fabric_candidates") or [],
             "price": extraction.get("price"),
             "error": None,

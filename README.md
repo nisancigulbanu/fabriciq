@@ -58,6 +58,16 @@ GEMINI_THINKING_BUDGET=0
 
 Gemini is not called automatically during URL or label analysis. The web UI sends an assistant request only when the user clicks the recommendation button or submits a question. If the Gemini API key is missing or the provider returns an unusable response, FabricIQ falls back to the deterministic local recommendation logic.
 
+Optional OCR configuration:
+
+```powershell
+FABRICIQ_LMSTUDIO_BASE_URL=http://127.0.0.1:1234
+FABRICIQ_LMSTUDIO_MODEL=qwen2-vl-2b-instruct
+FABRICIQ_LMSTUDIO_TIMEOUT_SECONDS=180
+```
+
+For label images, FabricIQ tries LM Studio vision OCR first when it is configured. Prompt echoes and text without fabric hints are rejected before fallback OCR. If LM Studio returns a complete valid composition, slower EasyOCR/PaddleOCR variants are skipped.
+
 Open API docs:
 
 ```text
@@ -116,11 +126,11 @@ Request body:
 ```json
 {
   "url": "https://www.koton.com/uzun-kollu-bisiklet-yaka-viskon-triko-kazak-sari-4166045-2/",
-  "product_type": "general"
+  "product_type": "auto"
 }
 ```
 
-`product_type` is optional. Use `general` or omit it to let FabricIQ infer context from the URL and scraped product text. Send one of the supported product types to override automatic URL context detection.
+`product_type` is optional. Use `auto` or omit it to let FabricIQ infer context from the URL and scraped product text. Use `general` for neutral everyday scoring, or send one of the supported product types to override automatic URL context detection.
 
 Example response:
 
@@ -202,13 +212,13 @@ These endpoints are for local development only:
 ## Testing
 
 ```powershell
-pytest backend\tests\test_quality_score.py backend\tests\test_analyze_label.py backend\tests\test_fabric_parser.py
+pytest backend\tests
 ```
 
 Current verified status:
 
 ```text
-41 passed
+45 passed
 ```
 
 ## Next Work

@@ -9,15 +9,33 @@ import os
 import time
 
 import cv2
-import easyocr
 import numpy as np
 import requests
 
 from .preprocessor import preprocess_image
 
+try:
+    import easyocr
+except ModuleNotFoundError:
+    easyocr = None
+
+
+logger = logging.getLogger("uvicorn.error")
+
+
+def _int_env(name: str, default: int) -> int:
+    """Read an integer environment variable without breaking OCR startup."""
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        logger.warning("Invalid integer environment value for %s; using %s.", name, default)
+        return default
+
+
 CONFIDENCE_THRESHOLD = 60.0
 REMOTE_OCR_CONFIDENCE = 90.0
 REMOTE_OCR_TIMEOUT_SECONDS = 90
+LMSTUDIO_OCR_TIMEOUT_SECONDS = _int_env("FABRICIQ_LMSTUDIO_TIMEOUT_SECONDS", 180)
 REMOTE_OCR_URL = os.getenv(
     "FABRICIQ_REMOTE_OCR_URL",
     "",
@@ -31,13 +49,69 @@ OCR_ALLOWLIST = (
     "ğüşöçıİĞÜŞÖÇ"
     "%.,-/ "
 )
-logger = logging.getLogger("uvicorn.error")
-_reader: easyocr.Reader | None = None
+_reader: object | None = None
+
+LMSTUDIO_PROMPT_ECHO_MARKERS = (
+    "bu bir kiyafet etiketi ocr gorevidir",
+    "bu bir kıyafet etiketi ocr gorevidir",
+    "gorseldeki etikette yazan",
+    "görseldeki etikette yazan",
+    "sadece ham metin olarak dondur",
+    "sadece ham metin olarak döndür",
+)
+LMSTUDIO_FABRIC_HINTS = (
+    "%",
+    "pamuk",
+    "cotton",
+    "polyester",
+    "elastan",
+    "elastane",
+    "viskoz",
+    "viscose",
+    "modal",
+    "lyocell",
+    "keten",
+    "linen",
+    "yün",
+    "wool",
+    "akrilik",
+    "acrylic",
+    "poliamid",
+    "polyamide",
+    "naylon",
+    "nylon",
+)
 
 
-def _get_reader() -> easyocr.Reader:
+def _encode_lmstudio_image(image: np.ndarray) -> tuple[str, bytes] | None:
+    """Encode an image for LM Studio without expanding photos into large PNG payloads."""
+    max_side = 1280
+    height, width = image.shape[:2]
+    scale = min(1.0, max_side / max(height, width))
+    if scale < 1.0:
+        image = cv2.resize(
+            image,
+            (int(width * scale), int(height * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    encoded_ok, encoded_image = cv2.imencode(
+        ".jpg",
+        image,
+        [int(cv2.IMWRITE_JPEG_QUALITY), 88],
+    )
+    if not encoded_ok:
+        return None
+
+    return "image/jpeg", encoded_image.tobytes()
+
+
+def _get_reader() -> object:
     """Create and cache the EasyOCR reader."""
     global _reader
+
+    if easyocr is None:
+        raise RuntimeError("EasyOCR is not installed in the active Python environment.")
 
     if _reader is None:
         _reader = easyocr.Reader(LANGUAGES)
@@ -100,6 +174,18 @@ def _extract_remote_text(payload: object) -> str:
     return str(result or "").strip()
 
 
+def _looks_like_lmstudio_prompt_echo(text: str) -> bool:
+    """Return true when the model echoed the OCR instruction instead of reading the image."""
+    normalized = " ".join(text.lower().split())
+    return any(marker in normalized for marker in LMSTUDIO_PROMPT_ECHO_MARKERS)
+
+
+def _has_fabric_hint(text: str) -> bool:
+    """Return true when OCR text contains any likely fabric/composition hint."""
+    normalized = text.lower()
+    return any(hint in normalized for hint in LMSTUDIO_FABRIC_HINTS)
+
+
 def _run_remote_ocr(image: np.ndarray) -> dict[str, str | float] | None:
     """Try the external Colab OCR service before falling back to local OCR."""
     if not REMOTE_OCR_URL:
@@ -152,25 +238,29 @@ def _run_lmstudio_ocr(image: np.ndarray) -> dict[str, str | float] | None:
         logger.info("LM Studio OCR settings are empty; skipping LM Studio.")
         return None
 
-    encoded_ok, encoded_image = cv2.imencode(".png", image)
-    if not encoded_ok:
+    encoded_result = _encode_lmstudio_image(image)
+    if encoded_result is None:
         logger.warning("LM Studio OCR skipped because image encoding failed.")
         return None
 
+    mime_type, encoded_image = encoded_result
     image_base64 = base64.b64encode(encoded_image).decode("ascii")
     endpoint = f"{LMSTUDIO_OCR_BASE_URL}/v1/chat/completions"
     prompt = (
-        "Bu bir kiyafet etiketi OCR gorevidir. "
-        "Gorseldeki etikette yazan tum metni birebir oku ve sadece ham metin olarak dondur. "
-        "Ozellikle MALZEMELER, DIS/IC, kumas icerigi ve yuzdeleri satir satir koru. "
-        "Yuzdeleri, sayilari, barkod rakamlarini ve kumas adlarini gordugun gibi yaz. "
-        "Gorseli tarif etme, ozetleme, yorumlama, ceviri yapma ve eksik deger uydurma. "
-        "Sadece etikette okudugun metni dondur."
+        "Read the clothing label in the image and transcribe only the visible label text. "
+        "Focus on material composition, percentages, and fabric names. "
+        "Do not describe the image. Do not repeat these instructions. Do not guess missing values. "
+        "If no readable label text is visible, return NO_TEXT_FOUND."
     )
 
     try:
         started_at = time.perf_counter()
-        logger.info("Sending image to LM Studio OCR: %s model=%s", endpoint, LMSTUDIO_OCR_MODEL)
+        logger.info(
+            "Sending image to LM Studio OCR: %s model=%s payload_bytes=%s",
+            endpoint,
+            LMSTUDIO_OCR_MODEL,
+            len(encoded_image),
+        )
         response = requests.post(
             endpoint,
             json={
@@ -178,23 +268,23 @@ def _run_lmstudio_ocr(image: np.ndarray) -> dict[str, str | float] | None:
                 "messages": [
                     {
                         "role": "system",
-                        "content": "Sen sadece goruntudeki etiket yazisini birebir metne ceviren bir OCR motorusun.",
+                        "content": "You are an OCR engine. Return only text visible in the provided image.",
                     },
                     {
                         "role": "user",
                         "content": [
+                            {"type": "text", "text": prompt},
                             {
                                 "type": "image_url",
-                                "image_url": {"url": f"data:image/png;base64,{image_base64}"},
+                                "image_url": {"url": f"data:{mime_type};base64,{image_base64}"},
                             },
-                            {"type": "text", "text": prompt},
                         ],
                     }
                 ],
                 "temperature": 0,
-                "max_tokens": 512,
+                "max_tokens": 1024,
             },
-            timeout=REMOTE_OCR_TIMEOUT_SECONDS,
+            timeout=LMSTUDIO_OCR_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         payload = response.json()
@@ -218,6 +308,12 @@ def _run_lmstudio_ocr(image: np.ndarray) -> dict[str, str | float] | None:
 
     if not text:
         logger.warning("LM Studio OCR returned empty text; trying next OCR path.")
+        return None
+    if _looks_like_lmstudio_prompt_echo(text):
+        logger.warning("LM Studio OCR echoed the prompt instead of reading the label; trying next OCR path.")
+        return None
+    if not _has_fabric_hint(text):
+        logger.warning("LM Studio OCR returned text without fabric hints; trying next OCR path.")
         return None
     if text.upper().strip().startswith(("NO_COMPOSITION_FOUND", "NO_TEXT_FOUND")):
         logger.warning("LM Studio OCR found no readable label text; trying next OCR path.")
@@ -246,6 +342,14 @@ def run_easyocr(image: np.ndarray) -> dict[str, str | float]:
     if remote_result is not None:
         logger.info("Using remote OCR result.")
         return remote_result
+
+    if easyocr is None:
+        logger.warning("Local EasyOCR is not installed; returning empty OCR result.")
+        return {
+            "raw_text": "",
+            "confident_text": "",
+            "avg_confidence": 0.0,
+        }
 
     logger.info("Running local EasyOCR fallback.")
     detections = _get_reader().readtext(
